@@ -126,6 +126,7 @@ bun run dev
 
 ### Docker 运行
 
+<!-- 触发自动构建 -->
 ```bash
 git clone git@github.com:basketikun/infinite-canvas.git
 cd infinite-canvas
