@@ -172,3 +172,18 @@ function loadImage(dataUrl: string) {
         image.src = dataUrl;
     });
 }
+/**
+ * 将不带前缀的base64字符串转为BlobURL，解决超大图片dataURL卡顿问题
+ * @param base64Str raw base64 string (without data:image prefix)
+ * @param mimeType e.g. "image/png", "image/webp"
+ * @returns blob:// url
+ */
+export function base64ToBlobUrl(base64Str: string, mimeType: string): string {
+  const binary = atob(base64Str);
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    array[i] = binary.charCodeAt(i);
+  }
+  const blob = new Blob([array], { type: mimeType });
+  return URL.createObjectURL(blob);
+}
