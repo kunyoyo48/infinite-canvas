@@ -34,6 +34,14 @@
 <table>
   <tr>
     <td width="190" align="center">
+      <a href="https://go.apimart.ai/gh-infinite-canvas" target="_blank" rel="noopener noreferrer"><img src="assets/apimart.png" width="163" alt="APIMart"></a>
+    </td>
+    <td>
+      感谢 <strong><a href="https://go.apimart.ai/gh-infinite-canvas" target="_blank" rel="noopener noreferrer">APIMart</a></strong> 赞助了本项目！<strong><a href="https://go.apimart.ai/gh-infinite-canvas" target="_blank" rel="noopener noreferrer">APIMart</a></strong> 是专注 AI 图片/视频生成的低价 API 平台，GPT-Image-2 低至 <strong>$0.006/张</strong>，<strong>1 美元</strong>可出图 <strong>160+ 张</strong>。图片、视频一套异步 API 通吃，提交任务拿 ID、回调取结果，跑批万张不超时、换模型不改代码。按量付费、无月费，通过 <strong><a href="https://go.apimart.ai/gh-infinite-canvas" target="_blank" rel="noopener noreferrer">此注册链接</a></strong> 注册即可开用。
+    </td>
+  </tr>
+  <tr>
+    <td width="190" align="center">
       <a href="https://www.atlascloud.ai/zh?utm_source=github&utm_medium=link&utm_campaign=infinite-canvas" target="_blank" rel="noopener noreferrer"><img src="assets/atlascloud.svg" width="163" alt="Atlas Cloud"></a>
     </td>
     <td>
