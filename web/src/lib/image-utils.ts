@@ -1,6 +1,60 @@
 import i18n from "@/i18n";
 import type { ReferenceImage } from "@/types/image";
 
+export const IMAGE_UPLOAD_MAX_EDGE = 1024;
+export const IMAGE_UPLOAD_MAX_BYTES = 1.5 * 1024 * 1024;
+const IMAGE_UPLOAD_MIN_EDGE = 640;
+const IMAGE_UPLOAD_REUSABLE_TYPES = /^image\/(png|jpe?g|webp)$/i;
+
+function canvasToBlob(canvas: HTMLCanvasElement, type: string, quality?: number) {
+    return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error(i18n.t("common.imageEncodeFailed")))), type, quality));
+}
+
+export async function compressImageBlob(source: Blob, maxBytes = IMAGE_UPLOAD_MAX_BYTES): Promise<Blob> {
+    const bitmap = await createImageBitmap(source, { imageOrientation: "from-image" }).catch(() => {
+        throw new Error(i18n.t("common.imageFormatUnsupported", { type: source.type || "-" }));
+    });
+    try {
+        if (IMAGE_UPLOAD_REUSABLE_TYPES.test(source.type) && source.size <= maxBytes && Math.max(bitmap.width, bitmap.height) <= IMAGE_UPLOAD_MAX_EDGE) return source;
+        let edge = IMAGE_UPLOAD_MAX_EDGE;
+        let preferPng = !/^image\/jpe?g$/i.test(source.type);
+        for (;;) {
+            const scale = Math.min(1, edge / Math.max(bitmap.width, bitmap.height));
+            const width = Math.max(1, Math.round(bitmap.width * scale));
+            const height = Math.max(1, Math.round(bitmap.height * scale));
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const context = canvas.getContext("2d");
+            if (!context) throw new Error(i18n.t("common.imageEncodeFailed"));
+            context.imageSmoothingQuality = "high";
+            context.drawImage(bitmap, 0, 0, width, height);
+
+            let blob = preferPng ? await canvasToBlob(canvas, "image/png") : undefined;
+            if (!blob || blob.size > maxBytes) {
+                context.globalCompositeOperation = "destination-over";
+                context.fillStyle = "#fff";
+                context.fillRect(0, 0, width, height);
+                preferPng = false;
+                blob = await canvasToBlob(canvas, "image/jpeg", 0.8);
+            }
+            if (blob.size <= maxBytes || edge <= IMAGE_UPLOAD_MIN_EDGE) return blob;
+            edge = Math.max(IMAGE_UPLOAD_MIN_EDGE, Math.round(edge / 2));
+        }
+    } finally {
+        bitmap.close();
+    }
+}
+
+export function blobToDataUrl(blob: Blob) {
+    return new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error(i18n.t("common.imageReadFailed")));
+        reader.readAsDataURL(blob);
+    });
+}
+
 export function formatBytes(bytes: number) {
     if (!Number.isFinite(bytes) || bytes <= 0) {
         return "";
