@@ -4,7 +4,7 @@ import i18n from "@/i18n";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
 import { normalizePluginImages, runModelPlugin } from "./model-plugin";
 import { nanoid } from "nanoid";
-import { dataUrlToFile } from "@/lib/image-utils";
+import { blobToDataUrl, compressImageBlob, IMAGE_UPLOAD_MAX_BYTES } from "@/lib/image-utils";
 import { buildImageReferencePromptText } from "@/lib/image-reference-prompt";
 import { imageToDataUrl } from "@/services/image-storage";
 import { imageSizePresets, inferMediaScale } from "@/lib/media-size";
@@ -107,6 +107,8 @@ const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 // 与 image-storage 的下载超时保持一致，避免接口挂起时节点一直停在生成中。
 const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
+// 服务端单次请求预算 16MiB，前端留一半余量给表单和网络重传。
+const IMAGE_UPLOAD_TOTAL_BYTES = 8 * 1024 * 1024;
 
 const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"];
 
@@ -281,7 +283,7 @@ function readAxiosError(error: unknown, fallback: string) {
     if (axios.isCancel(error)) return apiText("requestCanceled");
     if (axios.isAxiosError(error)) {
         if (error.code === "ECONNABORTED" || error.code === "ETIMEDOUT") return apiText("imageTimeout");
-        if (!error.response && error.code === "ERR_NETWORK") return apiText("requestFailed");
+        if (!error.response && error.code === "ERR_NETWORK") return apiText("networkError");
         const responseData = error.response?.data;
         // Prefer the API error from the response body.
         const apiMsg = readApiErrorMessage(responseData);
@@ -751,16 +753,45 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     }
 }
 
+type PreparedReferenceImage = { image: ReferenceImage; file: File };
+
+function referenceFileName(name: string, type: string) {
+    const extension = type === "image/jpeg" ? "jpg" : type === "image/webp" ? "webp" : "png";
+    return `${(name || "reference").replace(/\.[^.]+$/, "") || "reference"}.${extension}`;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+    if (!signal?.aborted) return;
+    throw signal.reason || new DOMException("Aborted", "AbortError");
+}
+
+async function prepareReferenceImages(references: ReferenceImage[], signal?: AbortSignal) {
+    const maxBytes = Math.min(IMAGE_UPLOAD_MAX_BYTES, Math.floor(IMAGE_UPLOAD_TOTAL_BYTES / Math.max(1, references.length)));
+    const prepared: PreparedReferenceImage[] = [];
+    for (const image of references) {
+        throwIfAborted(signal);
+        const dataUrl = await imageToDataUrl(image, { signal });
+        if (!dataUrl) throw new Error(i18n.t("common.imageReadFailed"));
+        const source = await (await fetch(dataUrl)).blob();
+        throwIfAborted(signal);
+        const blob = await compressImageBlob(source, maxBytes);
+        throwIfAborted(signal);
+        prepared.push({ image, file: new File([blob], referenceFileName(image.name, blob.type), { type: blob.type }) });
+    }
+    return prepared;
+}
+
 export async function requestEdit(config: AiConfig, prompt: string, references: ReferenceImage[], options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(15, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
+    const prepared = references.length ? await prepareReferenceImages(references, options?.signal) : [];
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
         const requestSize = resolveRequestSize(config.size);
         const background = normalizeBackground(config.background);
-        const refs = await Promise.all(references.map((image) => imageToDataUrl(image)));
+        const refs = await Promise.all(prepared.map(({ file }) => blobToDataUrl(file)));
         try {
             const result = await runModelPlugin({
                 capability: "image",
@@ -778,7 +809,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
     if (requestConfig.apiFormat === "gemini") {
         try {
-            return await requestGeminiImages(requestConfig, requestPrompt, references, n, options);
+            const geminiReferences = await Promise.all(prepared.map(async ({ image, file }) => ({ ...image, type: file.type, dataUrl: await blobToDataUrl(file) })));
+            return await requestGeminiImages(requestConfig, requestPrompt, geminiReferences, n, options);
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
@@ -805,9 +837,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (background) {
         formData.set("background", background);
     }
-    const files = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    const imageField = files.length > 1 ? "image[]" : "image";
-    files.forEach((file) => formData.append(imageField, file));
+    const imageField = prepared.length > 1 ? "image[]" : "image";
+    prepared.forEach(({ file }) => formData.append(imageField, file));
 
     try {
         const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
