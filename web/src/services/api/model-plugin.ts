@@ -259,10 +259,11 @@ async function generateImage({
   apiKey,
   request,
 }) {
+  const apiBase = baseUrl.replace(/\\/v1$/i, "");
   if (images.length === 0) {
     const data = await request({
       method: "post",
-      url: \`\${baseUrl}/v1/images/generations\`,
+      url: \`\${apiBase}/v1/images/generations\`,
       headers: {
         "Content-Type": "application/json",
         Authorization: \`Bearer \${apiKey}\`,
@@ -298,7 +299,7 @@ async function generateImage({
   }
   const edited = await request({
     method: "post",
-    url: \`\${baseUrl}/v1/images/edits\`,
+    url: \`\${apiBase}/v1/images/edits\`,
     headers: {
       Authorization: \`Bearer \${apiKey}\`,
     },
@@ -475,6 +476,7 @@ async function generateVideo({
   request,
   poll,
 }) {
+  const apiBase = baseUrl.replace(/\\/v1$/i, "");
   const form = new FormData();
   form.set("model", model);
   form.set("prompt", prompt);
@@ -508,7 +510,7 @@ async function generateVideo({
   };
   const task = await request({
     method: "post",
-    url: \`\${baseUrl}/v1/videos\`,
+    url: \`\${apiBase}/v1/videos\`,
     headers,
     data: form,
   });
@@ -517,7 +519,7 @@ async function generateVideo({
     async () => {
       const state = await request({
         method: "get",
-        url: \`\${baseUrl}/v1/videos/\${task.id}\`,
+        url: \`\${apiBase}/v1/videos/\${task.id}\`,
         headers,
       });
       if (state.status === "failed" || state.status === "cancelled") {
@@ -529,7 +531,7 @@ async function generateVideo({
       if (state.status === "completed") {
         return await request({
           method: "get",
-          url: \`\${baseUrl}/v1/videos/\${task.id}/content\`,
+          url: \`\${apiBase}/v1/videos/\${task.id}/content\`,
           headers,
           responseType: "blob",
         });
@@ -745,9 +747,10 @@ async function generateAudio({
   apiKey,
   request,
 }) {
+  const apiBase = baseUrl.replace(/\\/v1$/i, "");
   return await request({
     method: "post",
-    url: \`\${baseUrl}/v1/audio/speech\`,
+    url: \`\${apiBase}/v1/audio/speech\`,
     headers: {
       "Content-Type": "application/json",
       Authorization: \`Bearer \${apiKey}\`,
@@ -866,6 +869,7 @@ async function generateText({
   request,
   onDelta,
 }) {
+  const apiBase = baseUrl.replace(/\\/v1$/i, "");
   const body = {
     model: model,
     input: messages,
@@ -877,7 +881,7 @@ async function generateText({
   }
   const data = await request({
     method: "post",
-    url: \`\${baseUrl}/v1/responses\`,
+    url: \`\${apiBase}/v1/responses\`,
     headers: {
       "Content-Type": "application/json",
       Authorization: \`Bearer \${apiKey}\`,
