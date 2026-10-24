@@ -76,6 +76,7 @@ export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
 const CHANNEL_MODEL_SEPARATOR = "::";
 const OPENAI_BASE_URL = "https://www.xnnapi.top/v1";
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
+const LEGACY_OPENAI_BASE_URL = "https://api.openai.com";
 export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
 export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
 
@@ -247,6 +248,8 @@ export const useConfigStore = create<ConfigStore>()(
         }),
         {
             name: CONFIG_STORE_KEY,
+            version: 1,
+            migrate: (persisted, version) => (version < 1 ? migrateLegacyBaseUrls(persisted) : (persisted as PersistedConfig)),
             partialize: (state) => ({ config: state.config, webdav: state.webdav }),
             merge: (persisted, current) => {
                 const persistedState = (persisted || {}) as Partial<ConfigStore>;
@@ -474,6 +477,32 @@ function normalizeChannels(config: AiConfig) {
 export function defaultBaseUrlForApiFormat(apiFormat: ApiCallFormat) {
     if (apiFormat === "gemini") return GEMINI_BASE_URL;
     return OPENAI_BASE_URL;
+}
+
+function upgradeLegacyBaseUrl(baseUrl: string | undefined) {
+    if (!baseUrl) return baseUrl;
+    const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+    if (normalizedBaseUrl !== LEGACY_OPENAI_BASE_URL && normalizedBaseUrl !== `${LEGACY_OPENAI_BASE_URL}/v1`) return baseUrl;
+    return OPENAI_BASE_URL;
+}
+
+type PersistedConfig = Pick<ConfigStore, "config" | "webdav">;
+
+function migrateLegacyBaseUrls(persisted: unknown): PersistedConfig {
+    const persistedState = (persisted || {}) as Partial<PersistedConfig>;
+    const persistedConfig = persistedState.config;
+    if (!persistedConfig) return persistedState as PersistedConfig;
+    const channels = Array.isArray(persistedConfig.channels)
+        ? persistedConfig.channels.map((channel) => ({ ...channel, baseUrl: upgradeLegacyBaseUrl(channel.baseUrl) || channel.baseUrl }))
+        : persistedConfig.channels;
+    return {
+        ...persistedState,
+        config: {
+            ...persistedConfig,
+            baseUrl: upgradeLegacyBaseUrl(persistedConfig.baseUrl) || persistedConfig.baseUrl,
+            channels,
+        },
+    } as PersistedConfig;
 }
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
