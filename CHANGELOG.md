@@ -6,7 +6,7 @@
 + [修复] 已保存过配置的渠道接口地址若仍是 `https://api.openai.com`，加载时会自动升级为新的默认地址。
 + [修复] 渠道接口地址已以 `/v1` 结尾时，OpenAI 规范的内置调用脚本不再重复拼接 `/v1`。
 + [优化] 生图参考图超出限制时提交前降采样并重新编码：长边不超过 1024、单张不超过 1.5MB、多图总量不超过 8MB；透明图优先 PNG，超限时铺白底转 JPEG 0.8，仍超限则继续减半边长，避免弱网上传超时或请求体未完整到达。
-+ [修复] OpenAI 格式视频接口在只有一张参考图时，遇到不支持 `image[]` 等文件字段的渠道（如 new-api、xAI）会自动改用标准 `input_reference` 重新提交，修复报 `unexpected file field` 的生成失败。
++ [修复] OpenAI 格式视频请求不再发送非标准的 `images` 文件字段；遇到只接受 `input_reference` 的渠道（如 new-api、xAI）时，单张参考图自动改用 `input_reference`，多张参考图或首尾帧改用 JSON 通过 `input_reference` 与 `metadata.last_frame` / `metadata.reference_images` 提交，修复报 `unexpected file field` 的生成失败。
 
 ## v0.20.0 - 2026-10-10
 
