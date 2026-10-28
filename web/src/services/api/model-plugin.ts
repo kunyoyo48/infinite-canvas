@@ -444,7 +444,7 @@ return await generateImage({
  * @param {File[]} videos - reference videos; empty when none
  * @param {File[]} audios - reference audio; empty when none
  * @param {object} params
- * @param {string} params.mode - "frames" uses first/last frame fields; "reference" sends all images as references. More than 2 images become "reference".
+ * @param {string} params.mode - "frames" or "reference"; OpenAI-style gateways get the first image as input_reference, legacy gateways get the mode-specific fields.
  * @param {string|number} params.seconds - duration
  * @param {string} params.size - output size, e.g. "1280x720"
  * @param {string} params.resolution - e.g. "720p"
@@ -477,43 +477,76 @@ async function generateVideo({
   poll,
 }) {
   const apiBase = baseUrl.replace(/\\/v1$/i, "");
-  const form = new FormData();
-  form.set("model", model);
-  form.set("prompt", prompt);
-  form.set("seconds", String(seconds || 8));
-  form.set("size", String(size || "1280x720"));
-  form.set("resolution_name", String(resolution || "720p"));
-  form.set("generate_audio", String(generateAudio !== false));
-  form.set("watermark", String(watermark === true));
-  form.set("mode", mode);
-  if (mode === "frames") {
-    if (images[0]) {
-      form.append("first_frame", await (await fetch(images[0])).blob(), "first.png");
+  const files = await Promise.all(images.map(async (dataUrl) => (await fetch(dataUrl)).blob()));
+  const buildForm = (variant) => {
+    const form = new FormData();
+    form.set("model", model);
+    form.set("prompt", prompt);
+    form.set("seconds", String(seconds || 8));
+    form.set("size", String(size || "1280x720"));
+    form.set("resolution_name", String(resolution || "720p"));
+    form.set("generate_audio", String(generateAudio !== false));
+    form.set("watermark", String(watermark === true));
+    form.set("mode", mode);
+    // OpenAI and most compatible video gateways only accept a single input_reference file.
+    if (variant === "openai") {
+      if (files[0]) {
+        form.append("input_reference", files[0], "reference.png");
+      }
+      return form;
     }
-    if (images[1]) {
-      form.append("last_frame", await (await fetch(images[1])).blob(), "last.png");
+    if (mode === "frames") {
+      if (files[0]) {
+        form.append("first_frame", files[0], "first.png");
+        form.append("images", files[0], "first.png");
+      }
+      if (files[1]) {
+        form.append("last_frame", files[1], "last.png");
+        form.append("images", files[1], "last.png");
+      }
+    } else {
+      files.forEach((file, index) => {
+        form.append("image[]", file, \`ref_\${index + 1}.png\`);
+        form.append("images", file, \`ref_\${index + 1}.png\`);
+      });
     }
-  } else {
-    for (const dataUrl of images) {
-      form.append("image[]", await (await fetch(dataUrl)).blob(), "ref.png");
+    for (const file of videos) {
+      form.append("video[]", file);
     }
-  }
-  for (const file of videos) {
-    form.append("video[]", file);
-  }
-  for (const file of audios) {
-    form.append("audio[]", file);
-  }
+    for (const file of audios) {
+      form.append("audio[]", file);
+    }
+    return form;
+  };
 
   const headers = {
     Authorization: \`Bearer \${apiKey}\`,
   };
-  const task = await request({
+  const submit = (form) => request({
     method: "post",
     url: \`\${apiBase}/v1/videos\`,
     headers,
     data: form,
   });
+  // A single image can move to input_reference without losing any reference; more images,
+  // or reference videos/audio, are only supported by the established fields.
+  const canFallback = files.length <= 1 && !videos.length && !audios.length;
+  const variants = canFallback ? ["legacy", "openai"] : ["legacy"];
+  let task;
+  for (const variant of variants) {
+    try {
+      task = await submit(buildForm(variant));
+      if (!task || !task.id) throw new Error("video response has no task id");
+      break;
+    } catch (error) {
+      const status = error && error.response && error.response.status;
+      if (!status || status < 400 || status >= 500) throw error;
+      const data = error.response.data || {};
+      const message = String((data.error && data.error.message) || data.msg || data.message || error.message || "");
+      if (!/(unexpected file field|input_reference|image\\[\\]|first_frame|last_frame)/i.test(message)) throw error;
+      if (variant === variants[variants.length - 1]) throw error;
+    }
+  }
 
   return await poll(
     async () => {
