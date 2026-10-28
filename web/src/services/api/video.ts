@@ -146,10 +146,9 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     throw new Error(apiText("noPlayableVideo"));
 }
 
-async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
-    const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
-    const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
-    const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
+type OpenAIVideoVariant = "openai" | "legacy";
+
+function buildOpenAIVideoBody(config: AiConfig, model: string, prompt: string, images: File[], videos: File[], audios: File[], variant: OpenAIVideoVariant) {
     const mode = resolveVideoMode(config.videoMode, images.length);
     const ratio = inferVideoRatio(config.size || "16:9");
     const body = new FormData();
@@ -164,6 +163,11 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     body.append("generate_audio", String(boolConfig(config.videoGenerateAudio, true)));
     body.append("watermark", String(boolConfig(config.videoWatermark, false)));
     body.append("mode", mode);
+    // OpenAI and most compatible video gateways only accept a single input_reference file.
+    if (variant === "openai") {
+        if (images[0]) body.append("input_reference", images[0], "reference.png");
+        return body;
+    }
     if (mode === "frames") {
         if (images[0]) {
             body.append("first_frame", images[0], "first.png");
@@ -181,13 +185,37 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     }
     videos.forEach((file) => body.append("video[]", file));
     audios.forEach((file) => body.append("audio[]", file));
-    try {
-        const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers: aiHeaders(config), signal: options?.signal })).data);
-        if (!created.id) throw new Error(apiText("noVideoTaskId"));
-        return { id: created.id, provider: "openai", model };
-    } catch (error) {
-        throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
+    return body;
+}
+
+function shouldRetryVideoVariant(error: unknown) {
+    if (axios.isCancel(error)) return false;
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    // Only retry client-side rejections; a 5xx may already have created a task.
+    if (status && (status < 400 || status >= 500)) return false;
+    return /(unexpected file field|input_reference|first_frame|last_frame|image\[\]|video\[\]|audio\[\])/i.test(readAxiosError(error, ""));
+}
+
+async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: string, references: ReferenceImage[], options?: VideoMediaOptions): Promise<VideoGenerationTask> {
+    const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+    const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
+    const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
+    // A single image can move to input_reference without losing any reference; more images,
+    // or reference videos/audio, are only supported by the established fields.
+    const canFallback = images.length <= 1 && !videos.length && !audios.length;
+    const variants: OpenAIVideoVariant[] = canFallback ? ["legacy", "openai"] : ["legacy"];
+    let lastError: unknown;
+    for (const variant of variants) {
+        try {
+            const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), buildOpenAIVideoBody(config, model, prompt, images, videos, audios, variant), { headers: aiHeaders(config), signal: options?.signal })).data);
+            if (!created.id) throw new Error(apiText("noVideoTaskId"));
+            return { id: created.id, provider: "openai", model };
+        } catch (error) {
+            lastError = error;
+            if (!shouldRetryVideoVariant(error) || variant === variants[variants.length - 1]) break;
+        }
     }
+    throw new Error(readAxiosError(lastError, apiText("videoTaskCreateFailed")));
 }
 
 async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask, options?: RequestOptions): Promise<VideoGenerationTaskState> {
