@@ -146,45 +146,80 @@ export async function storeGeneratedVideo(result: VideoGenerationResult): Promis
     throw new Error(apiText("noPlayableVideo"));
 }
 
-type OpenAIVideoVariant = "openai" | "legacy";
+type OpenAIVideoVariant = "openai" | "legacy" | "json";
+
+function videoCommonFields(config: AiConfig, model: string, prompt: string, imageCount: number) {
+    const ratio = inferVideoRatio(config.size || "16:9");
+    return {
+        model: modelOptionName(model),
+        prompt,
+        seconds: normalizeVideoSeconds(config.videoSeconds),
+        size: normalizeVideoSize(config.size, config.vquality) || "1280x720",
+        ratio,
+        resolution: normalizeVideoResolution(config.vquality),
+        generateAudio: String(boolConfig(config.videoGenerateAudio, true)),
+        watermark: String(boolConfig(config.videoWatermark, false)),
+        mode: resolveVideoMode(config.videoMode, imageCount),
+    };
+}
 
 function buildOpenAIVideoBody(config: AiConfig, model: string, prompt: string, images: File[], videos: File[], audios: File[], variant: OpenAIVideoVariant) {
-    const mode = resolveVideoMode(config.videoMode, images.length);
-    const ratio = inferVideoRatio(config.size || "16:9");
+    const fields = videoCommonFields(config, model, prompt, images.length);
     const body = new FormData();
-    body.append("model", modelOptionName(model));
-    body.append("prompt", prompt);
-    body.append("seconds", normalizeVideoSeconds(config.videoSeconds));
-    body.append("size", normalizeVideoSize(config.size, config.vquality) || "1280x720");
-    if (ratio && ratio !== "auto") {
-        body.append("ratio", ratio);
-    }
-    body.append("resolution_name", normalizeVideoResolution(config.vquality));
-    body.append("generate_audio", String(boolConfig(config.videoGenerateAudio, true)));
-    body.append("watermark", String(boolConfig(config.videoWatermark, false)));
-    body.append("mode", mode);
+    body.append("model", fields.model);
+    body.append("prompt", fields.prompt);
+    body.append("seconds", fields.seconds);
+    body.append("size", fields.size);
+    if (fields.ratio && fields.ratio !== "auto") body.append("ratio", fields.ratio);
+    body.append("resolution_name", fields.resolution);
+    body.append("generate_audio", fields.generateAudio);
+    body.append("watermark", fields.watermark);
+    body.append("mode", fields.mode);
     // OpenAI and most compatible video gateways only accept a single input_reference file.
     if (variant === "openai") {
         if (images[0]) body.append("input_reference", images[0], "reference.png");
         return body;
     }
-    if (mode === "frames") {
-        if (images[0]) {
-            body.append("first_frame", images[0], "first.png");
-            body.append("images", images[0], "first.png");
-        }
-        if (images[1]) {
-            body.append("last_frame", images[1], "last.png");
-            body.append("images", images[1], "last.png");
-        }
+    if (fields.mode === "frames") {
+        if (images[0]) body.append("first_frame", images[0], "first.png");
+        if (images[1]) body.append("last_frame", images[1], "last.png");
     } else {
-        images.forEach((file, idx) => {
-            body.append("image[]", file, `ref_${idx + 1}.png`);
-            body.append("images", file, `ref_${idx + 1}.png`);
-        });
+        images.forEach((file, idx) => body.append("image[]", file, `ref_${idx + 1}.png`));
     }
     videos.forEach((file) => body.append("video[]", file));
     audios.forEach((file) => body.append("audio[]", file));
+    return body;
+}
+
+/**
+ * JSON fallback for relays that only accept input_reference as a multipart file
+ * but still read xAI metadata (last_frame / reference_images / reference_audios).
+ */
+async function buildOpenAIVideoJson(config: AiConfig, model: string, prompt: string, images: File[], audios: File[]) {
+    const fields = videoCommonFields(config, model, prompt, images.length);
+    const metadata: Record<string, unknown> = {};
+    if (fields.mode === "frames") {
+        if (images[1]) metadata.last_frame = await readFileAsDataUrl(images[1]);
+    } else if (images.length > 1) {
+        metadata.reference_images = await Promise.all(images.slice(1).map(async (file) => ({ url: await readFileAsDataUrl(file) })));
+    }
+    if (audios.length) {
+        metadata.reference_audios = await Promise.all(audios.map(async (file) => ({ url: await readFileAsDataUrl(file) })));
+    }
+    const body: Record<string, unknown> = {
+        model: fields.model,
+        prompt: fields.prompt,
+        seconds: fields.seconds,
+        size: fields.size,
+        resolution_name: fields.resolution,
+        resolution: fields.resolution,
+        generate_audio: fields.generateAudio === "true",
+        watermark: fields.watermark === "true",
+        mode: fields.mode,
+        ...(fields.ratio && fields.ratio !== "auto" ? { ratio: fields.ratio } : {}),
+    };
+    if (images[0]) body.input_reference = await readFileAsDataUrl(images[0]);
+    if (Object.keys(metadata).length) body.metadata = metadata;
     return body;
 }
 
@@ -200,14 +235,16 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
     const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
-    // A single image can move to input_reference without losing any reference; more images,
-    // or reference videos/audio, are only supported by the established fields.
-    const canFallback = images.length <= 1 && !videos.length && !audios.length;
-    const variants: OpenAIVideoVariant[] = canFallback ? ["legacy", "openai"] : ["legacy"];
+    const variants: OpenAIVideoVariant[] = ["legacy"];
+    if (images.length <= 1 && !videos.length && !audios.length) variants.push("openai");
+    // Reference videos have no JSON equivalent for text-to-video tasks.
+    if (!videos.length) variants.push("json");
     let lastError: unknown;
     for (const variant of variants) {
         try {
-            const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), buildOpenAIVideoBody(config, model, prompt, images, videos, audios, variant), { headers: aiHeaders(config), signal: options?.signal })).data);
+            const body = variant === "json" ? await buildOpenAIVideoJson(config, model, prompt, images, audios) : buildOpenAIVideoBody(config, model, prompt, images, videos, audios, variant);
+            const headers = variant === "json" ? aiHeaders(config, "application/json") : aiHeaders(config);
+            const created = unwrapVideoResponse((await axios.post<ApiVideoResponse>(aiApiUrl(config, "/videos"), body, { headers, signal: options?.signal })).data);
             if (!created.id) throw new Error(apiText("noVideoTaskId"));
             return { id: created.id, provider: "openai", model };
         } catch (error) {

@@ -478,16 +478,21 @@ async function generateVideo({
 }) {
   const apiBase = baseUrl.replace(/\\/v1$/i, "");
   const files = await Promise.all(images.map(async (dataUrl) => (await fetch(dataUrl)).blob()));
+  const common = {
+    model,
+    prompt,
+    seconds: String(seconds || 8),
+    size: String(size || "1280x720"),
+    resolution_name: String(resolution || "720p"),
+    generate_audio: String(generateAudio !== false),
+    watermark: String(watermark === true),
+    mode,
+  };
   const buildForm = (variant) => {
     const form = new FormData();
-    form.set("model", model);
-    form.set("prompt", prompt);
-    form.set("seconds", String(seconds || 8));
-    form.set("size", String(size || "1280x720"));
-    form.set("resolution_name", String(resolution || "720p"));
-    form.set("generate_audio", String(generateAudio !== false));
-    form.set("watermark", String(watermark === true));
-    form.set("mode", mode);
+    for (const [key, value] of Object.entries(common)) {
+      form.set(key, value);
+    }
     // OpenAI and most compatible video gateways only accept a single input_reference file.
     if (variant === "openai") {
       if (files[0]) {
@@ -498,16 +503,13 @@ async function generateVideo({
     if (mode === "frames") {
       if (files[0]) {
         form.append("first_frame", files[0], "first.png");
-        form.append("images", files[0], "first.png");
       }
       if (files[1]) {
         form.append("last_frame", files[1], "last.png");
-        form.append("images", files[1], "last.png");
       }
     } else {
       files.forEach((file, index) => {
         form.append("image[]", file, \`ref_\${index + 1}.png\`);
-        form.append("images", file, \`ref_\${index + 1}.png\`);
       });
     }
     for (const file of videos) {
@@ -518,24 +520,52 @@ async function generateVideo({
     }
     return form;
   };
+  const fileToDataUrl = (file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+  // JSON fallback for relays that only accept input_reference as a multipart file
+  // but still read xAI metadata (last_frame / reference_images / reference_audios).
+  const buildJson = async () => {
+    const metadata = {};
+    if (mode === "frames") {
+      if (images[1]) metadata.last_frame = images[1];
+    } else if (images.length > 1) {
+      metadata.reference_images = images.slice(1).map((url) => ({ url }));
+    }
+    if (audios.length) {
+      metadata.reference_audios = await Promise.all(audios.map(async (file) => ({ url: await fileToDataUrl(file) })));
+    }
+    const body = {
+      ...common,
+      resolution: String(resolution || "720p"),
+      generate_audio: generateAudio !== false,
+      watermark: watermark === true,
+    };
+    if (images[0]) body.input_reference = images[0];
+    if (Object.keys(metadata).length) body.metadata = metadata;
+    return body;
+  };
 
   const headers = {
     Authorization: \`Bearer \${apiKey}\`,
   };
-  const submit = (form) => request({
+  const submit = (body) => request({
     method: "post",
     url: \`\${apiBase}/v1/videos\`,
     headers,
-    data: form,
+    data: body,
   });
-  // A single image can move to input_reference without losing any reference; more images,
-  // or reference videos/audio, are only supported by the established fields.
-  const canFallback = files.length <= 1 && !videos.length && !audios.length;
-  const variants = canFallback ? ["legacy", "openai"] : ["legacy"];
+  const variants = ["legacy"];
+  if (files.length <= 1 && !videos.length && !audios.length) variants.push("openai");
+  // Reference videos have no JSON equivalent for text-to-video tasks.
+  if (!videos.length) variants.push("json");
   let task;
   for (const variant of variants) {
     try {
-      task = await submit(buildForm(variant));
+      task = await submit(variant === "json" ? await buildJson() : buildForm(variant));
       if (!task || !task.id) throw new Error("video response has no task id");
       break;
     } catch (error) {
