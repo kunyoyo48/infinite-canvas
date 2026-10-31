@@ -59,7 +59,8 @@ async function storeImage(blob: Blob, options?: ImageReadOptions): Promise<Uploa
         await store.setItem(storageKey, blob);
         throwIfAborted(options?.signal);
         objectUrls.set(storageKey, url);
-        await storeImagePreview(storageKey, blob);
+        // 缩略图只是展示优化，排到后台队列生成，不阻塞生成结果立即上画布。
+        queueImagePreview(storageKey);
         return { url, storageKey, width: meta.width, height: meta.height, bytes: blob.size, mimeType: blob.type.startsWith("image/") ? blob.type : "" };
     } catch (error) {
         URL.revokeObjectURL(url);
@@ -183,13 +184,20 @@ export async function ensureImagePreview(storageKey?: string) {
 }
 
 // 缩略图生成排成一队，避免一次打开大量图片时同时解码。
+const queuedPreviews = new Set<string>();
+
 function queueImagePreview(storageKey: string) {
+    if (queuedPreviews.has(storageKey)) return;
+    queuedPreviews.add(storageKey);
     previewQueue = previewQueue
         .then(async () => {
             const original = await getImageBlob(storageKey);
             if (original) await storeImagePreview(storageKey, original);
         })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+            queuedPreviews.delete(storageKey);
+        });
 }
 
 async function storeImagePreview(storageKey: string, original: Blob) {

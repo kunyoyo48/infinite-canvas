@@ -107,6 +107,9 @@ const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 // 与 image-storage 的下载超时保持一致，避免接口挂起时节点一直停在生成中。
 const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
+// 中转接口偶发在长请求上断开连接（ERR_NETWORK），自动重试一次，避免整批卡片直接失败。
+const IMAGE_NETWORK_RETRIES = 1;
+const IMAGE_NETWORK_RETRY_DELAY_MS = 1200;
 // 批量生图每个槽位单独发请求；同时在途的请求数过高会占满浏览器连接并拖垮中转接口。
 export const IMAGE_REQUEST_CONCURRENCY = 5;
 // 服务端单次请求预算 16MiB，前端留一半余量给表单和网络重传。
@@ -307,6 +310,41 @@ function readStatusError(status: number | undefined, fallback: string) {
     if (status === 502) return apiText("badGateway");
     if (status === 503) return apiText("serviceBusy");
     return status ? apiText("httpFailed", { status }) : fallback;
+}
+
+/** A dropped connection has no response, so one retry is preferable to failing the whole slot. */
+function isTransientNetworkError(error: unknown, signal?: AbortSignal) {
+    return !signal?.aborted && axios.isAxiosError(error) && !axios.isCancel(error) && error.code === "ERR_NETWORK";
+}
+
+function waitBeforeRetry(signal?: AbortSignal) {
+    return new Promise<void>((resolve, reject) => {
+        if (signal?.aborted) {
+            reject(new DOMException("Aborted", "AbortError"));
+            return;
+        }
+        let timer = 0;
+        const abort = () => {
+            window.clearTimeout(timer);
+            reject(new DOMException("Aborted", "AbortError"));
+        };
+        timer = window.setTimeout(() => {
+            signal?.removeEventListener("abort", abort);
+            resolve();
+        }, IMAGE_NETWORK_RETRY_DELAY_MS);
+        signal?.addEventListener("abort", abort, { once: true });
+    });
+}
+
+async function withNetworkRetry<T>(request: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+        try {
+            return await request();
+        } catch (error) {
+            if (attempt >= IMAGE_NETWORK_RETRIES || !isTransientNetworkError(error, signal)) throw error;
+            await waitBeforeRetry(signal);
+        }
+    }
 }
 
 function withSystemPrompt(config: AiConfig, prompt: string) {
@@ -668,13 +706,17 @@ async function requestGeminiImagesOnce(config: AiConfig, prompt: string, referen
     for (const image of references) {
         parts.push(toGeminiImagePart(await imageToDataUrl(image)));
     }
-    const response = await axios.post<GeminiPayload>(
-        geminiApiUrl(config, "generateContent"),
-        {
-            ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
-            contents: [{ role: "user", parts }],
-        },
-        { headers: geminiHeaders(config), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS },
+    const response = await withNetworkRetry(
+        () =>
+            axios.post<GeminiPayload>(
+                geminiApiUrl(config, "generateContent"),
+                {
+                    ...toGeminiBody(config, [{ role: "user", content: prompt }], { generationConfig: { responseModalities: ["TEXT", "IMAGE"], ...resolveGeminiImageConfig(config) } }),
+                    contents: [{ role: "user", parts }],
+                },
+                { headers: geminiHeaders(config), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS },
+            ),
+        options?.signal,
     );
     return parseGeminiImagePayload(response.data);
 }
@@ -729,24 +771,28 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
     try {
-        const response = await axios.post<ImageApiResponse>(
-            aiApiUrl(requestConfig, "/images/generations"),
-            {
-                model: requestConfig.model,
-                prompt: withSystemPrompt(requestConfig, prompt),
-                n,
-                ...(quality ? { quality } : {}),
-                ...(requestSize ? { size: requestSize } : {}),
-                ...(background ? { background } : {}),
-                // gpt-image models reject response_format; they always return b64.
-                ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
-                output_format: IMAGE_OUTPUT_FORMAT,
-            },
-            {
-                headers: aiHeaders(requestConfig, "application/json"),
-                signal: options?.signal,
-                timeout: IMAGE_REQUEST_TIMEOUT_MS,
-            },
+        const response = await withNetworkRetry(
+            () =>
+                axios.post<ImageApiResponse>(
+                    aiApiUrl(requestConfig, "/images/generations"),
+                    {
+                        model: requestConfig.model,
+                        prompt: withSystemPrompt(requestConfig, prompt),
+                        n,
+                        ...(quality ? { quality } : {}),
+                        ...(requestSize ? { size: requestSize } : {}),
+                        ...(background ? { background } : {}),
+                        // gpt-image models reject response_format; they always return b64.
+                        ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
+                        output_format: IMAGE_OUTPUT_FORMAT,
+                    },
+                    {
+                        headers: aiHeaders(requestConfig, "application/json"),
+                        signal: options?.signal,
+                        timeout: IMAGE_REQUEST_TIMEOUT_MS,
+                    },
+                ),
+            options?.signal,
         );
         const images = await parseImagePayload(response.data);
         return images;
@@ -756,6 +802,20 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
 }
 
 type PreparedReferenceImage = { image: ReferenceImage; file: File };
+
+// 批量生图会把同一个参考图数组传给每个槽位，压缩结果按数组复用，避免同一批图被并发读取、压缩多次。
+const preparedReferenceCache = new WeakMap<ReferenceImage[], Promise<PreparedReferenceImage[]>>();
+
+function prepareReferences(references: ReferenceImage[], signal?: AbortSignal) {
+    const cached = preparedReferenceCache.get(references);
+    if (cached) return cached;
+    const prepared = prepareReferenceImages(references, signal).catch((error) => {
+        preparedReferenceCache.delete(references);
+        throw error;
+    });
+    preparedReferenceCache.set(references, prepared);
+    return prepared;
+}
 
 function referenceFileName(name: string, type: string) {
     const extension = type === "image/jpeg" ? "jpg" : type === "image/webp" ? "webp" : "png";
@@ -787,7 +847,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(5000, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
-    const prepared = references.length ? await prepareReferenceImages(references, options?.signal) : [];
+    const prepared = references.length ? await prepareReferences(references, options?.signal) : [];
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
@@ -843,7 +903,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     prepared.forEach(({ file }) => formData.append(imageField, file));
 
     try {
-        const response = await axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS });
+        const response = await withNetworkRetry(
+            () => axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS }),
+            options?.signal,
+        );
         const images = await parseImagePayload(response.data);
         return images;
     } catch (error) {
