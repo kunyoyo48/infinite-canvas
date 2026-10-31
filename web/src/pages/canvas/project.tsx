@@ -5,7 +5,7 @@ import { Group, Video } from "lucide-react";
 import { saveAs } from "file-saver";
 import { useTranslation } from "react-i18next";
 
-import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
+import { IMAGE_REQUEST_CONCURRENCY, requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
 import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
 import { createVideoGenerationTask, isVideoTaskFailed, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
 import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
@@ -49,7 +49,8 @@ import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
-import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, focusViewportForNode, getConnectionTargetAnchor, getGroupWrapRect, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, focusViewportForNode, getConnectionTargetAnchor, getGroupWrapRect, nodeRenderBounds, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
+import { runWithConcurrency } from "@/lib/concurrency";
 import {
     audioExtension,
     buildAngleLabel,
@@ -700,8 +701,12 @@ function InfiniteCanvasPage() {
     }, [nodes, size.height, size.width, viewport.k, viewport.x, viewport.y]);
 
     const visibleNodes = useMemo(
-        () => nodes.filter((node) => node.position.x + node.width > viewBounds.left && node.position.x < viewBounds.right && node.position.y + node.height > viewBounds.top && node.position.y < viewBounds.bottom),
-        [nodes, viewBounds],
+        () =>
+            nodes.filter((node) => {
+                const bounds = nodeRenderBounds(node, expandedBatchNodeIds.has(node.id));
+                return bounds.right > viewBounds.left && bounds.left < viewBounds.right && bounds.bottom > viewBounds.top && bounds.top < viewBounds.bottom;
+            }),
+        [expandedBatchNodeIds, nodes, viewBounds],
     );
 
     const nodeById = useMemo(() => new Map(nodes.map((node) => [node.id, node])), [nodes]);
@@ -2470,52 +2475,52 @@ function InfiniteCanvasPage() {
                     let hasSuccess = false;
                     let hasFailure = false;
                     let firstError = "";
-                    await Promise.all(
-                        imageIds.map(async (imageId) => {
-                            try {
-                                const image = referenceImages.length
-                                    ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, { signal: controller.signal }).then((items) => items[0])
-                                    : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
-                                const uploaded = await uploadImage(image.dataUrl, { signal: controller.signal });
-                                const imageSize = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
-                                const item: CanvasNodeImage = { id: imageId, status: NODE_STATUS_SUCCESS, content: uploaded.url, storageKey: uploaded.storageKey, naturalWidth: uploaded.width, naturalHeight: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
-                                setNodes((prev) =>
-                                    prev.map((node) => {
-                                        if (node.id !== rootId) return node;
-                                        const images = node.metadata?.images?.map((image) => (image.id === imageId ? item : image)) || [];
-                                        if (node.metadata?.primaryImageId) return { ...node, metadata: { ...node.metadata, images } };
-                                        const center = { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 };
-                                        return {
-                                            ...node,
-                                            position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
-                                            ...imageSize,
-                                            metadata: {
-                                                ...node.metadata,
-                                                content: item.content,
-                                                storageKey: item.storageKey,
-                                                naturalWidth: item.naturalWidth,
-                                                naturalHeight: item.naturalHeight,
-                                                bytes: item.bytes,
-                                                mimeType: item.mimeType,
-                                                images,
-                                                primaryImageId: imageId,
-                                            },
-                                        };
-                                    }),
-                                );
-                                hasSuccess = true;
-                                if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
-                                return true;
-                            } catch (error) {
-                                if (isGenerationCanceled(error)) return false;
-                                const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
-                                if (!firstError) firstError = errorDetails;
-                                hasFailure = true;
-                                setNodes((prev) => prev.map((node) => (node.id === rootId ? { ...node, metadata: { ...node.metadata, images: node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)) } } : node)));
-                            }
-                            return false;
-                        }),
-                    );
+                    // Limit in-flight requests so 500+ slots do not exhaust browser connections and the relay.
+                    await runWithConcurrency(imageIds, IMAGE_REQUEST_CONCURRENCY, async (imageId) => {
+                        if (controller.signal.aborted) return false;
+                        try {
+                            const image = referenceImages.length
+                                ? await requestEdit({ ...generationConfig, count: "1" }, effectivePrompt, referenceImages, { signal: controller.signal }).then((items) => items[0])
+                                : await requestGeneration({ ...generationConfig, count: "1" }, effectivePrompt, { signal: controller.signal }).then((items) => items[0]);
+                            const uploaded = await uploadImage(image.dataUrl, { signal: controller.signal });
+                            const imageSize = fitNodeSize(uploaded.width, uploaded.height, imageConfig.width, imageConfig.height);
+                            const item: CanvasNodeImage = { id: imageId, status: NODE_STATUS_SUCCESS, content: uploaded.url, storageKey: uploaded.storageKey, naturalWidth: uploaded.width, naturalHeight: uploaded.height, bytes: uploaded.bytes, mimeType: uploaded.mimeType };
+                            setNodes((prev) =>
+                                prev.map((node) => {
+                                    if (node.id !== rootId) return node;
+                                    const images = node.metadata?.images?.map((image) => (image.id === imageId ? item : image)) || [];
+                                    if (node.metadata?.primaryImageId) return { ...node, metadata: { ...node.metadata, images } };
+                                    const center = { x: node.position.x + node.width / 2, y: node.position.y + node.height / 2 };
+                                    return {
+                                        ...node,
+                                        position: { x: center.x - imageSize.width / 2, y: center.y - imageSize.height / 2 },
+                                        ...imageSize,
+                                        metadata: {
+                                            ...node.metadata,
+                                            content: item.content,
+                                            storageKey: item.storageKey,
+                                            naturalWidth: item.naturalWidth,
+                                            naturalHeight: item.naturalHeight,
+                                            bytes: item.bytes,
+                                            mimeType: item.mimeType,
+                                            images,
+                                            primaryImageId: imageId,
+                                        },
+                                    };
+                                }),
+                            );
+                            hasSuccess = true;
+                            if (isConfigNode) setNodes((prev) => prev.map((node) => (node.id === nodeId ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_SUCCESS, errorDetails: undefined } } : node)));
+                            return true;
+                        } catch (error) {
+                            if (isGenerationCanceled(error)) return false;
+                            const errorDetails = error instanceof Error ? error.message : t("canvas.projectPage.generationFailed");
+                            if (!firstError) firstError = errorDetails;
+                            hasFailure = true;
+                            setNodes((prev) => prev.map((node) => (node.id === rootId ? { ...node, metadata: { ...node.metadata, images: node.metadata?.images?.map((image) => (image.id === imageId ? { ...image, status: NODE_STATUS_ERROR, errorDetails } : image)) } } : node)));
+                        }
+                        return false;
+                    });
                     if (rootId !== nodeId) finishGenerationRequest(rootId, controller);
                     if (controller.signal.aborted) {
                         setNodes((prev) => prev.map((node) => (node.id === nodeId && isConfigNode && node.metadata?.status === NODE_STATUS_LOADING ? { ...node, metadata: { ...node.metadata, status: NODE_STATUS_IDLE, errorDetails: undefined } } : node)));

@@ -15,7 +15,8 @@ import { modelOptionLabel, useConfigStore, useEffectiveConfig, type AiConfig } f
 import { useThemeStore } from "@/stores/use-theme-store";
 import { nanoid } from "nanoid";
 import { formatBytes, formatDuration } from "@/lib/image-utils";
-import { requestEdit, requestGeneration } from "@/services/api/image";
+import { runWithConcurrency } from "@/lib/concurrency";
+import { IMAGE_REQUEST_CONCURRENCY, requestEdit, requestGeneration } from "@/services/api/image";
 import { deleteStoredImages, ensureImagePreview, getImagePreviewRevision, previewUrlFor, resolveImageUrl, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
@@ -177,9 +178,14 @@ export default function ImagePage() {
         const batchStartedAt = performance.now();
         setStartedAt(batchStartedAt);
 
-        const tasks = Array.from({ length: generationCount }, (_, index) => runGenerationSlot(index, snapshot));
-
-        const result = await Promise.allSettled(tasks);
+        const tasks = Array.from({ length: generationCount }, (_, index) => index);
+        const result: PromiseSettledResult<GeneratedImage>[] = await runWithConcurrency(tasks, IMAGE_REQUEST_CONCURRENCY, async (index) => {
+            try {
+                return { status: "fulfilled" as const, value: await runGenerationSlot(index, snapshot) };
+            } catch (reason) {
+                return { status: "rejected" as const, reason };
+            }
+        });
         const successImages = result.filter((item): item is PromiseFulfilledResult<GeneratedImage> => item.status === "fulfilled").map((item) => item.value);
         const successCount = successImages.length;
         const failCount = generationCount - successCount;
