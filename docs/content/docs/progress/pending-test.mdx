@@ -7,6 +7,8 @@ description: Implemented changes that still need manual verification
 
 The current release needs manual verification in these areas:
 
+- Image generation count: the maximum count in the canvas image settings popover, the image workbench, the canvas default image count preference, and Agent image config should be 5000. Quick options stay at 1–10, and requests should submit the selected count.
+
 - Default endpoint: a fresh configuration (or one that has never been saved) should default the provider Base URL to `https://www.xnnapi.top/v1`, and a previously saved Base URL that is still `https://api.openai.com` should be upgraded to `https://www.xnnapi.top/v1` when the page loads; custom Base URLs stay unchanged. Fetching models and generating images, videos, text, and audio should request `https://www.xnnapi.top/v1/...` without appending a second `/v1`, including when using the built-in OpenAI call scripts.
 
 - Saved model selection: save a canvas node with a model, then remove its provider or remove that model while another video model remains the default. Generation, retry and pending-video recovery should keep the unavailable model selected and open configuration instead of sending a request to the default or first provider. Re-selecting a valid model should allow generation. Changing only the API key on the same provider should preserve the model; switching a config node from a valid image model to video should still use the video default.
