@@ -47,7 +47,7 @@ import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
-import { exportCanvasProjects } from "@/lib/canvas/canvas-export";
+import { exportCanvasImages, exportCanvasProjects } from "@/lib/canvas/canvas-export";
 import { applyNodeConfigPatch, audioMetadata, buildAudioGenerationMetadata, buildImageGenerationMetadata, createCanvasNode, imageMetadata, videoMetadata } from "@/lib/canvas/canvas-node-factory";
 import { applyGroupSelection, applyUngroupSelection, canGroupSelectedNodes, canUngroupSelectedNodes, collectGroupMemberNodes, findContainingGroupId, findGroupDropTarget, focusViewportForNode, getConnectionTargetAnchor, getGroupWrapRect, nodeRenderBounds, normalizeConnection, snapNodesIntoGroup } from "@/lib/canvas/canvas-node-geometry";
 import { runWithConcurrency } from "@/lib/concurrency";
@@ -1814,6 +1814,29 @@ function InfiniteCanvasPage() {
         saveAs(image.content, `canvas-image-${node.id}-${image.id}.${imageExtension(image.content)}`);
     }, []);
 
+    const downloadCanvasImages = useCallback(
+        async (targets: CanvasNodeData[], fileName?: string) => {
+            const imageNodes = targets.filter((node) => node.type === CanvasNodeType.Image);
+            if (!imageNodes.length) {
+                message.info(t("canvas.export.noImages"));
+                return;
+            }
+            const hide = message.loading(t("canvas.export.downloading"), 0);
+            try {
+                const count = await exportCanvasImages(imageNodes, fileName || t("canvas.export.downloadImagesName", { count: imageNodes.length }));
+                count ? message.success(t("canvas.export.downloaded", { count })) : message.info(t("canvas.export.noImages"));
+            } catch (error) {
+                console.error(error);
+                message.error(t("canvas.export.downloadFailed"));
+            } finally {
+                hide();
+            }
+        },
+        [t],
+    );
+
+    const downloadAllBatchImages = useCallback((node: CanvasNodeData) => void downloadCanvasImages([node], node.title), [downloadCanvasImages]);
+
     const captureVideoNodeFrame = useCallback(
         async (nodeId: string, position: VideoFramePosition) => {
             setContextMenu(null);
@@ -3265,6 +3288,7 @@ function InfiniteCanvasPage() {
                             onSetBatchPrimary={setBatchPrimary}
                             onDuplicateBatchImage={duplicateBatchImage}
                             onDownloadBatchImage={downloadBatchImage}
+                            onDownloadAllBatchImages={downloadAllBatchImages}
                             onRetryBatchImage={retryBatchImage}
                             onDeleteBatchImage={deleteBatchImage}
                             onRetry={handleNodeRetry}
@@ -3361,6 +3385,7 @@ function InfiniteCanvasPage() {
                         canUngroup={canUngroupSelection}
                         onGroup={groupSelection}
                         onUngroup={ungroupSelection}
+                        onDownloadImages={() => void downloadCanvasImages(selectedNodes)}
                     />
                 ) : null}
 

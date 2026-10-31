@@ -52,6 +52,7 @@ type CanvasNodeProps = {
     onSetBatchPrimary?: (nodeId: string, itemId: string) => void;
     onDuplicateBatchImage?: (node: CanvasNodeData, imageId: string) => void;
     onDownloadBatchImage?: (node: CanvasNodeData, imageId: string) => void;
+    onDownloadAllBatchImages?: (node: CanvasNodeData) => void;
     onRetryBatchImage?: (node: CanvasNodeData, imageId: string) => void;
     onDeleteBatchImage?: (nodeId: string, imageId: string) => void;
     onRetry?: (node: CanvasNodeData) => void;
@@ -79,6 +80,7 @@ type NodeContentRendererProps = {
     onSetBatchPrimary?: (itemId: string) => void;
     onDuplicateBatchImage?: (imageId: string) => void;
     onDownloadBatchImage?: (imageId: string) => void;
+    onDownloadAllBatchImages?: () => void;
     onRetryBatchImage?: (imageId: string) => void;
     onDeleteBatchImage?: (imageId: string) => void;
     onViewBatchImage?: (imageId: string) => void;
@@ -117,6 +119,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     onSetBatchPrimary,
     onDuplicateBatchImage,
     onDownloadBatchImage,
+    onDownloadAllBatchImages,
     onRetryBatchImage,
     onDeleteBatchImage,
     onRetry,
@@ -421,6 +424,7 @@ export const CanvasNode = React.memo(function CanvasNode({
                         onSetBatchPrimary={(itemId) => onSetBatchPrimary?.(data.id, itemId)}
                         onDuplicateBatchImage={(imageId) => onDuplicateBatchImage?.(data, imageId)}
                         onDownloadBatchImage={(imageId) => onDownloadBatchImage?.(data, imageId)}
+                        onDownloadAllBatchImages={() => onDownloadAllBatchImages?.(data)}
                         onRetryBatchImage={(imageId) => onRetryBatchImage?.(data, imageId)}
                         onDeleteBatchImage={(imageId) => onDeleteBatchImage?.(data.id, imageId)}
                         onViewBatchImage={(imageId) => onViewImage?.(data, imageId)}
@@ -686,6 +690,7 @@ function ImageNodeContent(props: NodeContentRendererProps) {
             onSetBatchPrimary={props.onSetBatchPrimary}
             onDuplicateBatchImage={props.onDuplicateBatchImage}
             onDownloadBatchImage={props.onDownloadBatchImage}
+            onDownloadAllBatchImages={props.onDownloadAllBatchImages}
             onRetryBatchImage={props.onRetryBatchImage}
             onDeleteBatchImage={props.onDeleteBatchImage}
             onViewBatchImage={props.onViewBatchImage}
@@ -745,6 +750,7 @@ function ImageContent({
     onSetBatchPrimary,
     onDuplicateBatchImage,
     onDownloadBatchImage,
+    onDownloadAllBatchImages,
     onRetryBatchImage,
     onDeleteBatchImage,
     onViewBatchImage,
@@ -756,6 +762,7 @@ function ImageContent({
     onSetBatchPrimary?: (imageId: string) => void;
     onDuplicateBatchImage?: (imageId: string) => void;
     onDownloadBatchImage?: (imageId: string) => void;
+    onDownloadAllBatchImages?: () => void;
     onRetryBatchImage?: (imageId: string) => void;
     onDeleteBatchImage?: (imageId: string) => void;
     onViewBatchImage?: (imageId: string) => void;
@@ -810,21 +817,40 @@ function ImageContent({
                 </button>
             ) : null}
             {isBatchRoot ? (
-                <button
-                    type="button"
-                    className="absolute right-2.5 top-2.5 z-30 flex h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold shadow-[0_6px_18px_rgba(28,25,23,.16)] backdrop-blur-md transition hover:scale-[1.02]"
-                    style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }}
-                    aria-label={batchExpanded ? t("canvas.node.batchExpanded") : t("canvas.node.batchCollapsed")}
-                    onClick={(event) => {
-                        event.stopPropagation();
-                        onToggleBatch?.();
-                    }}
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => event.stopPropagation()}
-                >
-                    <span className="leading-none">{t("canvas.controls.images", { count: batchCount })}</span>
-                    <ChevronRight className={`size-3.5 opacity-80 transition-transform ${batchExpanded ? "rotate-90" : ""}`} />
-                </button>
+                <div className="absolute right-2.5 top-2.5 z-30 flex items-center gap-1.5">
+                    {batchExpanded && onDownloadAllBatchImages ? (
+                        <button
+                            type="button"
+                            className="flex h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold shadow-[0_6px_18px_rgba(28,25,23,.16)] backdrop-blur-md transition hover:scale-[1.02]"
+                            style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }}
+                            title={t("canvas.node.downloadAllTitle")}
+                            onClick={(event) => {
+                                event.stopPropagation();
+                                onDownloadAllBatchImages();
+                            }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onPointerDown={(event) => event.stopPropagation()}
+                        >
+                            <Download className="size-3.5" />
+                            <span className="leading-none">{t("canvas.node.downloadAll")}</span>
+                        </button>
+                    ) : null}
+                    <button
+                        type="button"
+                        className="flex h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold shadow-[0_6px_18px_rgba(28,25,23,.16)] backdrop-blur-md transition hover:scale-[1.02]"
+                        style={{ background: theme.toolbar.panel, borderColor: theme.toolbar.border, color: theme.toolbar.activeText }}
+                        aria-label={batchExpanded ? t("canvas.node.batchExpanded") : t("canvas.node.batchCollapsed")}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            onToggleBatch?.();
+                        }}
+                        onMouseDown={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => event.stopPropagation()}
+                    >
+                        <span className="leading-none">{t("canvas.controls.images", { count: batchCount })}</span>
+                        <ChevronRight className={`size-3.5 opacity-80 transition-transform ${batchExpanded ? "rotate-90" : ""}`} />
+                    </button>
+                </div>
             ) : null}
         </BatchFrame>
     );
