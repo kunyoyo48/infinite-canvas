@@ -89,7 +89,7 @@ export async function hydrateAssistantImages(sessions: CanvasAssistantSession[])
 }
 
 export function getGenerationCount(count: string) {
-    return Math.max(1, Math.min(15, Math.floor(Math.abs(Number(count)) || 1)));
+    return Math.max(1, Math.min(5000, Math.floor(Math.abs(Number(count)) || 1)));
 }
 
 export function getInputSummary(inputs: NodeGenerationInput[]) {

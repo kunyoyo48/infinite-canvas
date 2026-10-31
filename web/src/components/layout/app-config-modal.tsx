@@ -239,7 +239,7 @@ export function AppConfigPanel({ showDoneButton = false, initialTab = "channels"
                                         <Input
                                             type="number"
                                             min={1}
-                                            max={15}
+                                            max={5000}
                                             value={config.canvasImageCount}
                                             onChange={(event) => updateConfig("canvasImageCount", event.target.value)}
                                             onBlur={(event) => updateConfig("canvasImageCount", normalizeImageCount(event.target.value))}
@@ -414,7 +414,7 @@ function pickDefaultModel(config: AiConfig, capability: ModelCapability, current
 }
 
 function normalizeImageCount(value: string) {
-    return String(Math.max(1, Math.min(15, Math.floor(Math.abs(Number(value)) || 3))));
+    return String(Math.max(1, Math.min(5000, Math.floor(Math.abs(Number(value)) || 3))));
 }
 
 function apiFormatLabel(apiFormat: ApiCallFormat) {

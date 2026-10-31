@@ -155,7 +155,7 @@ function getImageConfig() {
         qualityOptions: imageQualityOptions,
         scaleOptions: imageScaleOptions,
         sizeOptions: imageAspectOptions,
-        countRange: { min: 1, max: 15 },
+        countRange: { min: 1, max: 5000 },
     };
 }
 
@@ -176,7 +176,7 @@ function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         applied.size = input.size;
     }
     if (input.count != null) {
-        const count = String(Math.max(1, Math.min(15, Math.floor(Number(input.count)) || 1)));
+        const count = String(Math.max(1, Math.min(5000, Math.floor(Number(input.count)) || 1)));
         configStore.updateConfig("count", count);
         applied.count = count;
     }
