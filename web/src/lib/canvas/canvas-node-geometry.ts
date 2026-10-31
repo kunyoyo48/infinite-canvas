@@ -1,5 +1,41 @@
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData, type ConnectionHandle, type ViewportTransform } from "@/types/canvas";
 
+export const BATCH_GRID_GAP = 18;
+
+// A near-square grid keeps large batches readable instead of a long narrow strip.
+export function batchGridColumns(count: number) {
+    return Math.max(1, Math.ceil(Math.sqrt(Math.max(1, count))));
+}
+
+export function batchGridSize(count: number, cellWidth: number, cellHeight: number) {
+    const total = Math.max(1, count);
+    const columns = Math.min(total, batchGridColumns(total));
+    const rows = Math.ceil(total / columns);
+    return {
+        columns,
+        rows,
+        width: columns * (cellWidth + BATCH_GRID_GAP) - BATCH_GRID_GAP,
+        height: rows * (cellHeight + BATCH_GRID_GAP) - BATCH_GRID_GAP,
+    };
+}
+
+// Expanded batch cards extend above and to the right of the root node, so culling must include them.
+export function batchGridBounds(node: Pick<CanvasNodeData, "position" | "width" | "height">, count: number) {
+    const { width, height } = batchGridSize(count, node.width, node.height);
+    const bottom = node.position.y + node.height;
+    return {
+        left: node.position.x,
+        top: bottom - height,
+        right: node.position.x + width,
+        bottom,
+    };
+}
+
+export function nodeRenderBounds(node: CanvasNodeData, batchExpanded: boolean) {
+    const count = !batchExpanded ? 0 : node.type === CanvasNodeType.Image ? node.metadata?.images?.length || 0 : node.type === CanvasNodeType.Text ? node.metadata?.texts?.length || 0 : 0;
+    return count > 1 ? batchGridBounds(node, count) : { left: node.position.x, top: node.position.y, right: node.position.x + node.width, bottom: node.position.y + node.height };
+}
+
 export function nodeBounds(nodes: CanvasNodeData[]) {
     return nodes.reduce(
         (acc, node) => ({

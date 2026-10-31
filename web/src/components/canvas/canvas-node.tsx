@@ -7,6 +7,7 @@ import { formatBytes } from "@/lib/image-utils";
 import { pickImageSource } from "@/lib/image-thumbnail";
 import { previewUrlFor, subscribeImagePreviews, getImagePreviewRevision } from "@/services/image-storage";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { BATCH_GRID_GAP, batchGridSize } from "@/lib/canvas/canvas-node-geometry";
 import { buildNodeContext } from "@/lib/canvas/plugin-node-context";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { CanvasResourceMentionTextarea } from "./canvas-resource-mention-textarea";
@@ -616,12 +617,12 @@ function ExpandedTextCard({ node, text, index, onSetPrimary }: { node: CanvasNod
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
     const { t } = useTranslation();
     const count = node.metadata?.texts?.length || 0;
-    const columns = Math.min(count, 4);
-    const rows = Math.ceil(count / columns);
+    const { columns, rows } = batchGridSize(count, node.width, node.height);
     const rootSlot = (rows - 1) * columns;
     const slot = index >= rootSlot ? index + 1 : index;
-    const x = (slot % columns) * (node.width + 18);
-    const y = (Math.floor(slot / columns) - rows + 1) * (node.height + 18);
+    const x = (slot % columns) * (node.width + BATCH_GRID_GAP);
+    const y = (Math.floor(slot / columns) - rows + 1) * (node.height + BATCH_GRID_GAP);
+    const animate = count <= 24;
 
     return (
         <div
@@ -637,7 +638,7 @@ function ExpandedTextCard({ node, text, index, onSetPrimary }: { node: CanvasNod
                     "--batch-from-x": `${-x}px`,
                     "--batch-from-y": `${-y}px`,
                     "--batch-from-rotate": `${4 + index * 2}deg`,
-                    animation: `canvas-batch-child-in 320ms ${index * 35}ms cubic-bezier(.2,.85,.18,1) both`,
+                    animation: animate ? `canvas-batch-child-in 320ms ${Math.min(index, 8) * 30}ms cubic-bezier(.2,.85,.18,1) both` : undefined,
                 } as React.CSSProperties
             }
             onMouseDown={(event) => event.stopPropagation()}
@@ -834,14 +835,15 @@ function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, on
     const { t } = useTranslation();
     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
     const count = node.metadata?.images?.length || 0;
-    const columns = Math.min(count, 4);
-    const rows = Math.ceil(count / columns);
+    const { columns, rows } = batchGridSize(count, node.width, node.height);
     const rootSlot = (rows - 1) * columns;
     const slot = index >= rootSlot ? index + 1 : index;
     const column = slot % columns;
     const row = Math.floor(slot / columns);
-    const x = column * (node.width + 18);
-    const y = (row - rows + 1) * (node.height + 18);
+    const x = column * (node.width + BATCH_GRID_GAP);
+    const y = (row - rows + 1) * (node.height + BATCH_GRID_GAP);
+    // Large batches skip the staggered intro so hundreds of cards mount immediately instead of appearing one by one.
+    const animate = count <= 24;
     const source = image.content
         ? pickImageSource({
               previewUrl: previewUrlFor(image.storageKey),
@@ -868,7 +870,7 @@ function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, on
                     "--batch-from-x": `${-x}px`,
                     "--batch-from-y": `${-y}px`,
                     "--batch-from-rotate": `${4 + index * 2}deg`,
-                    animation: `canvas-batch-child-in 320ms ${index * 35}ms cubic-bezier(.2,.85,.18,1) both`,
+                    animation: animate ? `canvas-batch-child-in 320ms ${Math.min(index, 8) * 30}ms cubic-bezier(.2,.85,.18,1) both` : undefined,
                 } as React.CSSProperties
             }
             onMouseDown={(event) => event.stopPropagation()}

@@ -1,6 +1,7 @@
 import localforage from "localforage";
 
 import i18n from "@/i18n";
+import { runWithConcurrency } from "@/lib/concurrency";
 import { getMediaBlob, resolveMediaUrl, setMediaBlob } from "@/services/file-storage";
 import { getImageBlob, resolveImageUrl, setImageBlob } from "@/services/image-storage";
 import { downloadWebdavFile, uploadWebdavFile, WEBDAV_MANIFEST_FILE_NAME } from "@/services/webdav-sync";
@@ -399,20 +400,6 @@ function waitForHydration<T extends { hydrated: boolean }>(store: { getState: ()
             resolve();
         });
     });
-}
-
-async function runWithConcurrency<T, R>(items: T[], limit: number, worker: (item: T, index: number) => Promise<R>) {
-    const results = new Array<R>(items.length);
-    let nextIndex = 0;
-    await Promise.all(
-        Array.from({ length: Math.min(limit, items.length) }, async () => {
-            while (nextIndex < items.length) {
-                const index = nextIndex++;
-                results[index] = await worker(items[index], index);
-            }
-        }),
-    );
-    return results;
 }
 
 function formatBytes(bytes: number) {

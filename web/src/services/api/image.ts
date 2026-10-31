@@ -107,6 +107,8 @@ const IMAGE_MAX_RATIO = 3;
 const IMAGE_OUTPUT_FORMAT = "png";
 // 与 image-storage 的下载超时保持一致，避免接口挂起时节点一直停在生成中。
 const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
+// 批量生图每个槽位单独发请求；同时在途的请求数过高会占满浏览器连接并拖垮中转接口。
+export const IMAGE_REQUEST_CONCURRENCY = 3;
 // 服务端单次请求预算 16MiB，前端留一半余量给表单和网络重传。
 const IMAGE_UPLOAD_TOTAL_BYTES = 8 * 1024 * 1024;
 
