@@ -47,6 +47,9 @@ export function buildImageGenerationMetadata(type: CanvasImageGenerationType, co
         size: config.size,
         quality: config.quality,
         ...(config.background ? { background: config.background } : {}),
+        imageFormat: config.imageFormat,
+        imageFrameCount: config.imageFrameCount,
+        imageFrameDuration: config.imageFrameDuration,
         count,
         references: references.map(referenceUrl).filter((url): url is string => Boolean(url)),
     };

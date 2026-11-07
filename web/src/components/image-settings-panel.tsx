@@ -16,6 +16,7 @@ const qualityOptions = [
     { value: "max", labelKey: "max" },
 ];
 const DIMENSION_STEP = 16;
+const imageFormatOptions = ["png", "jpeg", "webp", "gif"];
 
 export const imageQualityOptions = qualityOptions.map((item) => ({ value: item.value, get label() { return i18n.t(`settingsPanels.common.${item.labelKey}`); } }));
 export const imageAspectOptions = mediaRatioOptions.map((item) => ({ value: item.value, label: item.value === "auto" ? i18n.t("settingsPanels.common.auto") : item.value }));
@@ -23,7 +24,7 @@ export const imageScaleOptions = mediaScaleOptions.map((value) => ({ value, labe
 
 type ImageSettingsPanelProps = {
     config: AiConfig;
-    onConfigChange: (key: "quality" | "size" | "count" | "background", value: string) => void;
+    onConfigChange: (key: "quality" | "size" | "count" | "background" | "imageFormat" | "imageFrameCount" | "imageFrameDuration", value: string) => void;
     theme: CanvasTheme;
     showTitle?: boolean;
     className?: string;
@@ -36,12 +37,20 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
     const [snapDimensionToStep, setSnapDimensionToStep] = useState(true);
     const quality = config.quality || "auto";
     const count = Math.max(1, Math.min(maxCount, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const format = config.imageFormat || "png";
+    const frameCount = clampNumber(config.imageFrameCount, 9, 2, 16);
+    const frameDuration = clampNumber(config.imageFrameDuration, 200, 20, 2000, 10);
     const activeSize = config.size || "auto";
     const transparentBackground = config.background === "transparent";
     const selectedScale = inferMediaScale(activeSize);
     const selectedRatio = inferMediaRatio(activeSize);
     const dimensions = readMediaDimensions(activeSize, selectedScale, selectedRatio);
     const applySize = (scale: string, ratio: string) => onConfigChange("size", computeMediaSize(scale, ratio));
+    const selectFormat = (value: string) => {
+        onConfigChange("imageFormat", value);
+        if (value !== "png" && value !== "webp" && transparentBackground) onConfigChange("background", "");
+    };
+    const supportsTransparency = format === "png" || format === "webp";
     const selectScale = (scale: string) => applySize(scale, selectedRatio === "auto" ? "1:1" : selectedRatio);
     const selectRatio = (ratio: string) => applySize(selectedScale, ratio);
     const updateDimension = (key: "width" | "height", value: number | null) => {
@@ -73,6 +82,33 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         ))}
                     </div>
                 </div>
+                <div className="space-y-2.5">
+                    <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.format")}</SettingTitle>
+                    <div className="grid grid-cols-4 gap-2.5">
+                        {imageFormatOptions.map((value) => (
+                            <OptionPill key={value} selected={format === value} theme={theme} onClick={() => selectFormat(value)}>
+                                {value.toUpperCase()}
+                            </OptionPill>
+                        ))}
+                    </div>
+                    {format === "gif" ? (
+                        <div className="text-xs leading-5" style={{ color: theme.node.muted, opacity: 0.75 }}>
+                            {t("settingsPanels.image.formatHint")}
+                        </div>
+                    ) : null}
+                </div>
+                {format === "gif" ? (
+                    <div className="space-y-2.5">
+                        <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.gifFrames")}</SettingTitle>
+                        <div className="grid grid-cols-2 gap-2.5">
+                            <NumberSetting label={t("settingsPanels.image.frameCount")} value={frameCount} min={2} max={16} fallback={9} theme={theme} onChange={(value) => onConfigChange("imageFrameCount", String(value))} />
+                            <NumberSetting label={t("settingsPanels.image.frameDuration")} value={frameDuration} min={20} max={2000} step={10} fallback={200} theme={theme} onChange={(value) => onConfigChange("imageFrameDuration", String(value))} />
+                        </div>
+                        <div className="text-xs leading-5" style={{ color: theme.node.muted, opacity: 0.75 }}>
+                            {t("settingsPanels.image.frameHint")}
+                        </div>
+                    </div>
+                ) : null}
                 <div className="space-y-2.5">
                     <div className="flex items-center justify-between gap-3">
                         <SettingTitle color={theme.node.muted}>{t("settingsPanels.image.size")}</SettingTitle>
@@ -127,7 +163,7 @@ export function ImageSettingsPanel({ config, onConfigChange, theme, showTitle = 
                         </div>
                     </div>
                     <span onMouseDown={(event) => event.stopPropagation()}>
-                        <Switch size="small" checked={transparentBackground} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
+                        <Switch size="small" checked={transparentBackground} disabled={!supportsTransparency} onChange={(checked) => onConfigChange("background", checked ? "transparent" : "")} />
                     </span>
                 </div>
                 <div className="space-y-2.5">
@@ -234,6 +270,36 @@ function CountInput({ value, max, theme, onChange }: { value: number; max: numbe
     );
 }
 
+function NumberSetting({ label, value, min, max, step = 1, fallback, theme, onChange }: { label: string; value: number; min: number; max: number; step?: number; fallback: number; theme: CanvasTheme; onChange: (value: number) => void }) {
+    const commit = (input: HTMLInputElement) => {
+        const next = clampNumber(input.value, fallback, min, max, step);
+        input.value = String(next);
+        onChange(next);
+    };
+
+    return (
+        <label className="flex h-9 overflow-hidden rounded-xl text-sm" style={{ background: theme.node.fill, color: theme.node.text }}>
+            <span className="grid shrink-0 place-items-center px-2.5 text-xs" style={{ color: theme.node.muted }}>
+                {label}
+            </span>
+            <input
+                type="number"
+                min={min}
+                max={max}
+                step={step}
+                className="min-w-0 flex-1 bg-transparent px-1 pr-2 text-right outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                defaultValue={value || ""}
+                key={`${label}-${value}`}
+                onBlur={(event) => commit(event.currentTarget)}
+                onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                }}
+                onMouseDown={(event) => event.stopPropagation()}
+            />
+        </label>
+    );
+}
+
 function AspectIcon({ width, height, color }: { width: number; height: number; color: string }) {
     if (!width || !height) return null;
     const ratio = width / height;
@@ -256,4 +322,9 @@ function SettingTitle({ children, color }: { children: string; color: string }) 
 
 function alignDimension(value: number, enabled: boolean) {
     return enabled ? Math.ceil(value / DIMENSION_STEP) * DIMENSION_STEP : value;
+}
+
+function clampNumber(value: string | undefined, fallback: number, min: number, max: number, step = 1) {
+    const rounded = Math.round((Number(value) || fallback) / step) * step;
+    return Math.max(min, Math.min(max, rounded));
 }

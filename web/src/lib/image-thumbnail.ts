@@ -28,6 +28,8 @@ export function getThumbnailDimensions(width: number, height: number, maxEdge = 
 }
 
 export async function createImageThumbnail(blob: Blob, maxEdge = CANVAS_IMAGE_PREVIEW_MAX_EDGE) {
+    // GIF 是动态图，转成静态 WebP 缩略图会丢失动画；直接使用原图。
+    if (blob.type === "image/gif") return undefined;
     const bitmap = await createImageBitmap(blob);
     const { width, height } = getThumbnailDimensions(bitmap.width, bitmap.height, maxEdge);
     if (width === bitmap.width && height === bitmap.height) {

@@ -60,7 +60,7 @@ type GenerationLog = {
     images: GeneratedImage[];
 };
 
-type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "size" | "count">;
+type GenerationLogConfig = Pick<AiConfig, "model" | "imageModel" | "quality" | "size" | "count" | "imageFormat" | "imageFrameCount" | "imageFrameDuration">;
 
 type UpdateAiConfig = <K extends keyof AiConfig>(key: K, value: AiConfig[K]) => void;
 
@@ -236,7 +236,8 @@ export default function ImagePage() {
     }, [autoRunToken]);
 
     const downloadImage = (image: GeneratedImage, index: number) => {
-        saveAs(image.dataUrl, `image-${index + 1}.png`);
+        const extension = image.mimeType?.split("/")[1]?.replace("jpeg", "jpg") || "png";
+        saveAs(image.dataUrl, `image-${index + 1}.${extension}`);
     };
 
     const addResultToReferences = async (image: GeneratedImage, index: number) => {
@@ -306,6 +307,9 @@ export default function ImagePage() {
         if (log.config.imageModel || log.model) updateConfig("imageModel", log.config.imageModel || log.model);
         if (log.config.quality) updateConfig("quality", log.config.quality);
         if (log.config.size) updateConfig("size", log.config.size);
+        if (log.config.imageFormat) updateConfig("imageFormat", log.config.imageFormat);
+        if (log.config.imageFrameCount) updateConfig("imageFrameCount", log.config.imageFrameCount);
+        if (log.config.imageFrameDuration) updateConfig("imageFrameDuration", log.config.imageFrameDuration);
         if (log.config.count) updateConfig("count", log.config.count);
         setResults(log.images.map((image) => ({ id: image.id, status: "success", image })));
     };
@@ -838,6 +842,9 @@ function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
         quality: log.config?.quality || log.quality || "",
         size: log.config?.size || log.size || "",
         count: log.config?.count || String(log.imageCount || log.successCount || 1),
+        imageFormat: log.config?.imageFormat || "png",
+        imageFrameCount: log.config?.imageFrameCount || "9",
+        imageFrameDuration: log.config?.imageFrameDuration || "200",
     };
 }
 
@@ -886,6 +893,9 @@ function buildLog({
         quality: config.quality,
         size: config.size,
         count: config.count,
+        imageFormat: config.imageFormat,
+        imageFrameCount: config.imageFrameCount,
+        imageFrameDuration: config.imageFrameDuration,
     };
     return {
         id: nanoid(),

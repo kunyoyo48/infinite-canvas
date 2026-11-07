@@ -102,7 +102,7 @@ export async function exportCanvasImages(nodes: CanvasNodeData[], fileName = i18
     const zipFilesForImages: { name: string; data: BlobPart }[] = [];
     const fallbacks: { name: string; content: string }[] = [];
     resolved.forEach(({ image, blob }) => {
-        const ext = blob ? fileExtension(blob.type || image.mimeType || "", image.storageKey || "") : imageExtension(image.content || "");
+        const ext = blob ? fileExtension(blob.type || image.mimeType || "", image.storageKey || "") : imageExtension(image.content || "", image.mimeType);
         const name = uniqueName(image.name, ext);
         if (blob) zipFilesForImages.push({ name, data: blob });
         else if (image.content) fallbacks.push({ name, content: image.content });

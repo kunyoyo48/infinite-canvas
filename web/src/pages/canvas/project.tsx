@@ -1806,6 +1806,9 @@ function InfiniteCanvasPage() {
                 size: node.metadata?.size,
                 quality: node.metadata?.quality,
                 background: node.metadata?.background,
+                imageFormat: node.metadata?.imageFormat,
+                imageFrameCount: node.metadata?.imageFrameCount,
+                imageFrameDuration: node.metadata?.imageFrameDuration,
                 references: node.metadata?.references,
             },
         };
@@ -1825,13 +1828,13 @@ function InfiniteCanvasPage() {
 
     const downloadNodeImage = useCallback((node: CanvasNodeData) => {
         if ((node.type !== CanvasNodeType.Image && node.type !== CanvasNodeType.Video && node.type !== CanvasNodeType.Audio) || !node.metadata?.content) return;
-        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content)}`);
+        saveAs(node.metadata.content, `canvas-${node.type}-${node.id}.${node.type === CanvasNodeType.Video ? "mp4" : node.type === CanvasNodeType.Audio ? audioExtension(node.metadata.mimeType) : imageExtension(node.metadata.content, node.metadata.mimeType)}`);
     }, []);
 
     const downloadBatchImage = useCallback((node: CanvasNodeData, imageId: string) => {
         const image = node.metadata?.images?.find((item) => item.id === imageId);
         if (!image?.content) return;
-        saveAs(image.content, `canvas-image-${node.id}-${image.id}.${imageExtension(image.content)}`);
+        saveAs(image.content, `canvas-image-${node.id}-${image.id}.${imageExtension(image.content, image.mimeType)}`);
     }, []);
 
     const downloadCanvasImages = useCallback(
@@ -2814,6 +2817,9 @@ function InfiniteCanvasPage() {
                           quality: savedImageMetadata.quality || effectiveConfig.quality,
                           size: savedImageMetadata.size || effectiveConfig.size,
                           background: savedImageMetadata.background ?? effectiveConfig.background,
+                          imageFormat: savedImageMetadata.imageFormat || effectiveConfig.imageFormat,
+                          imageFrameCount: savedImageMetadata.imageFrameCount || effectiveConfig.imageFrameCount,
+                          imageFrameDuration: savedImageMetadata.imageFrameDuration || effectiveConfig.imageFrameDuration,
                           count: "1",
                       }
                     : { ...buildGenerationConfig(effectiveConfig, sourceNode, node.type === CanvasNodeType.Text ? "text" : node.type === CanvasNodeType.Video ? "video" : node.type === CanvasNodeType.Audio ? "audio" : "image"), count: "1" };
@@ -2898,6 +2904,9 @@ function InfiniteCanvasPage() {
                           size: generationConfig.size,
                           quality: generationConfig.quality,
                           ...(generationConfig.background ? { background: generationConfig.background } : {}),
+                          imageFormat: generationConfig.imageFormat,
+                          imageFrameCount: generationConfig.imageFrameCount,
+                          imageFrameDuration: generationConfig.imageFrameDuration,
                           count: savedImageMetadata.count || 1,
                           references: savedImageMetadata.references,
                       }

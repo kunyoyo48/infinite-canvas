@@ -9,7 +9,8 @@ import type { CanvasImageAngleParams } from "@/components/canvas/canvas-node-ang
 import type { ReferenceImage } from "@/types/image";
 import { CanvasNodeType, type CanvasAssistantSession, type CanvasConnection, type CanvasNodeData, type CanvasNodeMetadata } from "@/types/canvas";
 
-export function imageExtension(dataUrl: string) {
+export function imageExtension(dataUrl: string, mimeType?: string) {
+    if (mimeType) return mimeType.split("/")[1]?.replace("jpeg", "jpg") || "png";
     return dataUrl.match(/^data:image[/]([^;]+)/)?.[1] || dataUrl.match(/image[/]([^;]+)/)?.[1] || "png";
 }
 
@@ -110,6 +111,9 @@ export function buildGenerationConfig(config: AiConfig, node: CanvasNodeData | u
         quality: node?.metadata?.quality || config.quality || defaultConfig.quality,
         size: node?.metadata?.size || config.size || defaultConfig.size,
         background: node?.metadata?.background ?? config.background ?? defaultConfig.background,
+        imageFormat: node?.metadata?.imageFormat || config.imageFormat || defaultConfig.imageFormat,
+        imageFrameCount: node?.metadata?.imageFrameCount || config.imageFrameCount || defaultConfig.imageFrameCount,
+        imageFrameDuration: node?.metadata?.imageFrameDuration || config.imageFrameDuration || defaultConfig.imageFrameDuration,
         videoSeconds: node?.metadata?.seconds || config.videoSeconds || defaultConfig.videoSeconds,
         vquality: node?.metadata?.vquality || config.vquality || defaultConfig.vquality,
         videoGenerateAudio: node?.metadata?.generateAudio || config.videoGenerateAudio || defaultConfig.videoGenerateAudio,
