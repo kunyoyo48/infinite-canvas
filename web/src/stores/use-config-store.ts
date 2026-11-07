@@ -50,6 +50,9 @@ export type AiConfig = {
     quality: string;
     size: string;
     background: string;
+    imageFormat: string;
+    imageFrameCount: string;
+    imageFrameDuration: string;
     count: string;
     canvasImageCount: string;
     proxyEnabled: boolean;
@@ -120,6 +123,9 @@ export const defaultConfig: AiConfig = {
     quality: "auto",
     size: "1:1",
     background: "",
+    imageFormat: "png",
+    imageFrameCount: "9",
+    imageFrameDuration: "200",
     count: "1",
     canvasImageCount: "3",
     proxyEnabled: false,
@@ -282,6 +288,9 @@ export const useConfigStore = create<ConfigStore>()(
                         videoGenerateAudio: config.videoGenerateAudio || "true",
                         videoWatermark: config.videoWatermark || "false",
                         videoMode: config.videoMode === "reference" ? "reference" : "frames",
+                        imageFormat: normalizeImageFormat(config.imageFormat),
+                        imageFrameCount: config.imageFrameCount || defaultConfig.imageFrameCount,
+                        imageFrameDuration: config.imageFrameDuration || defaultConfig.imageFrameDuration,
                         canvasImageCount: config.canvasImageCount || "3",
                         proxyEnabled: Boolean(config.proxyEnabled),
                         proxyUrl: config.proxyUrl || DEFAULT_LOCAL_PROXY_URL,
@@ -507,6 +516,10 @@ function migrateLegacyBaseUrls(persisted: unknown): PersistedConfig {
 
 function normalizeApiFormat(apiFormat: unknown): ApiCallFormat {
     return apiFormat === "gemini" ? apiFormat : "openai";
+}
+
+function normalizeImageFormat(value: unknown) {
+    return value === "jpeg" || value === "webp" || value === "gif" ? value : "png";
 }
 
 function uniqueModelOptions(models: string[]) {

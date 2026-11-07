@@ -58,6 +58,9 @@ export type CanvasNodeMetadata = {
     size?: string;
     quality?: string;
     background?: string;
+    imageFormat?: string;
+    imageFrameCount?: string;
+    imageFrameDuration?: string;
     count?: number;
     textCount?: number;
     texts?: CanvasNodeText[];

@@ -98,13 +98,17 @@ type GeminiStreamState = { buffer: string; text: string; toolCalls: ResponseTool
 type RequestOptions = { signal?: AbortSignal };
 
 const IMAGE_QUALITY_VALUES = ["low", "medium", "high", "xhigh", "max"];
+const IMAGE_FORMAT_VALUES = ["png", "jpeg", "webp", "gif"];
+const IMAGE_FRAME_COUNT_DEFAULT = 9;
+const IMAGE_FRAME_DURATION_DEFAULT = 200;
+const IMAGE_FRAME_COUNT_RANGE = [2, 16];
+const IMAGE_FRAME_DURATION_RANGE = [20, 2000];
 const DEFAULT_IMAGE_SHORT_SIDE = 1024;
 const IMAGE_SIZE_STEP = 16;
 const IMAGE_MIN_PIXELS = 655360;
 const IMAGE_MAX_PIXELS = 8294400;
 const IMAGE_MAX_EDGE = 3840;
 const IMAGE_MAX_RATIO = 3;
-const IMAGE_OUTPUT_FORMAT = "png";
 // 与 image-storage 的下载超时保持一致，避免接口挂起时节点一直停在生成中。
 const IMAGE_REQUEST_TIMEOUT_MS = 10 * 60_000;
 // 中转接口偶发在长请求上断开连接（ERR_NETWORK），自动重试一次，避免整批卡片直接失败。
@@ -120,6 +124,45 @@ const GEMINI_SUPPORTED_RATIOS = ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1"
 function normalizeQuality(quality: string) {
     const value = quality.trim().toLowerCase();
     return IMAGE_QUALITY_VALUES.includes(value) ? value : undefined;
+}
+
+function normalizeImageFormat(format: string | undefined) {
+    const value = format?.trim().toLowerCase() || "png";
+    return IMAGE_FORMAT_VALUES.includes(value) ? value : "png";
+}
+
+function clampImageNumber(value: string | undefined, fallback: number, [min, max]: number[], step = 1) {
+    const rounded = Math.round((Number(value) || fallback) / step) * step;
+    return Math.max(min, Math.min(max, rounded));
+}
+
+function normalizeFrameCount(value: string | undefined) {
+    return clampImageNumber(value, IMAGE_FRAME_COUNT_DEFAULT, IMAGE_FRAME_COUNT_RANGE);
+}
+
+function normalizeFrameDuration(value: string | undefined) {
+    return clampImageNumber(value, IMAGE_FRAME_DURATION_DEFAULT, IMAGE_FRAME_DURATION_RANGE, 10);
+}
+
+function imageMimeForFormat(format: string) {
+    if (format === "gif") return "image/gif";
+    if (format === "jpeg") return "image/jpeg";
+    if (format === "webp") return "image/webp";
+    return "image/png";
+}
+
+/** b64_json may not match the requested format (e.g. a relay returns PNG for a GIF request); sniff common signatures first. */
+function imageDataUrl(value: string, format: string) {
+    const mime = value.startsWith("R0lGOD")
+        ? "image/gif"
+        : value.startsWith("iVBORw0KG")
+          ? "image/png"
+          : value.startsWith("/9j/")
+            ? "image/jpeg"
+            : value.startsWith("UklGR")
+              ? "image/webp"
+              : imageMimeForFormat(format);
+    return `data:${mime};base64,${value}`;
 }
 
 /** Only "transparent" is forwarded; any other value (incl. empty) means keep the default opaque background. */
@@ -217,9 +260,9 @@ function resolveGeminiImageSize(dimensions: { width: number; height: number } | 
     return "4K";
 }
 
-function resolveImageSource(item: Record<string, unknown>) {
+function resolveImageSource(item: Record<string, unknown>, format: string) {
     if (typeof item.b64_json === "string" && item.b64_json) {
-        return `data:image/png;base64,${item.b64_json}`;
+        return imageDataUrl(item.b64_json, format);
     }
     if (typeof item.url === "string" && item.url) {
         return item.url;
@@ -227,7 +270,7 @@ function resolveImageSource(item: Record<string, unknown>) {
     return null;
 }
 
-function parseImagePayload(payload: ImageApiResponse) {
+function parseImagePayload(payload: ImageApiResponse, format: string) {
     if (typeof payload.code === "number" && payload.code !== 0) {
         throw new Error(payload.msg || apiText("requestFailed"));
     }
@@ -237,7 +280,7 @@ function parseImagePayload(payload: ImageApiResponse) {
         || (payload as Record<string, unknown>).results as Array<Record<string, unknown>> | undefined
         || [];
     const images = imageList
-        .map(resolveImageSource)
+        .map((item) => resolveImageSource(item, format))
         .filter((value): value is string => Boolean(value))
         .map((dataUrl) => ({ id: nanoid(), dataUrl }));
 
@@ -740,6 +783,9 @@ function parseGeminiImagePayload(payload: GeminiPayload) {
 export async function requestGeneration(config: AiConfig, prompt: string, options?: RequestOptions) {
     const requestConfig = resolveModelRequestConfig(config, config.model || config.imageModel);
     const n = Math.max(1, Math.min(5000, Math.floor(Math.abs(Number(config.count)) || 1)));
+    const format = normalizeImageFormat(config.imageFormat);
+    const frameCount = normalizeFrameCount(config.imageFrameCount);
+    const frameDuration = normalizeFrameDuration(config.imageFrameDuration);
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
@@ -752,10 +798,10 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, prompt),
                 images: [],
-                params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
+                params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}), outputFormat: format, frameCount, frameDuration },
                 signal: options?.signal,
             });
-            return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+            return normalizePluginImages(result, format).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
@@ -770,6 +816,8 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
+    // OpenAI only allows transparent backgrounds with PNG / WebP output.
+    const requestBackground = format === "png" || format === "webp" ? background : undefined;
     try {
         const response = await withNetworkRetry(
             () =>
@@ -781,10 +829,11 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                         n,
                         ...(quality ? { quality } : {}),
                         ...(requestSize ? { size: requestSize } : {}),
-                        ...(background ? { background } : {}),
+                        ...(requestBackground ? { background: requestBackground } : {}),
                         // gpt-image models reject response_format; they always return b64.
                         ...(/gpt-image/.test(requestConfig.model) ? {} : { response_format: "b64_json" }),
-                        output_format: IMAGE_OUTPUT_FORMAT,
+                        output_format: format,
+                        ...(format === "gif" ? { frame_count: frameCount, frame_duration_ms: frameDuration } : {}),
                     },
                     {
                         headers: aiHeaders(requestConfig, "application/json"),
@@ -794,7 +843,7 @@ export async function requestGeneration(config: AiConfig, prompt: string, option
                 ),
             options?.signal,
         );
-        const images = await parseImagePayload(response.data);
+        const images = await parseImagePayload(response.data, format);
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));
@@ -848,6 +897,9 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const n = Math.max(1, Math.min(5000, Math.floor(Math.abs(Number(config.count)) || 1)));
     const requestPrompt = buildImageReferencePromptText(prompt, references);
     const prepared = references.length ? await prepareReferences(references, options?.signal) : [];
+    const format = normalizeImageFormat(config.imageFormat);
+    const frameCount = normalizeFrameCount(config.imageFrameCount);
+    const frameDuration = normalizeFrameDuration(config.imageFrameDuration);
     const script = resolveModelScript(config, config.model || config.imageModel);
     if (script) {
         const quality = normalizeQuality(config.quality);
@@ -861,10 +913,10 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
                 config: requestConfig,
                 prompt: withSystemPrompt(requestConfig, requestPrompt),
                 images: refs,
-                params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}) },
+                params: { size: requestSize, resolution: inferMediaScale(config.size), quality, count: n, ...(background ? { background } : {}), outputFormat: format, frameCount, frameDuration },
                 signal: options?.signal,
             });
-            return normalizePluginImages(result).map((dataUrl) => ({ id: nanoid(), dataUrl }));
+            return normalizePluginImages(result, format).map((dataUrl) => ({ id: nanoid(), dataUrl }));
         } catch (error) {
             throw new Error(readAxiosError(error, apiText("requestFailed")));
         }
@@ -881,6 +933,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     const quality = normalizeQuality(config.quality);
     const requestSize = resolveRequestSize(config.size);
     const background = normalizeBackground(config.background);
+    // OpenAI only allows transparent backgrounds with PNG / WebP output.
+    const requestBackground = format === "png" || format === "webp" ? background : undefined;
     const formData = new FormData();
     formData.set("model", requestConfig.model);
     formData.set("prompt", withSystemPrompt(requestConfig, requestPrompt));
@@ -889,15 +943,19 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     if (!/gpt-image/.test(requestConfig.model)) {
         formData.set("response_format", "b64_json");
     }
-    formData.set("output_format", IMAGE_OUTPUT_FORMAT);
+    formData.set("output_format", format);
     if (quality) {
         formData.set("quality", quality);
     }
     if (requestSize) {
         formData.set("size", requestSize);
     }
-    if (background) {
-        formData.set("background", background);
+    if (requestBackground) {
+        formData.set("background", requestBackground);
+    }
+    if (format === "gif") {
+        formData.set("frame_count", String(frameCount));
+        formData.set("frame_duration_ms", String(frameDuration));
     }
     const imageField = prepared.length > 1 ? "image[]" : "image";
     prepared.forEach(({ file }) => formData.append(imageField, file));
@@ -907,7 +965,7 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
             () => axios.post<ImageApiResponse>(aiApiUrl(requestConfig, "/images/edits"), formData, { headers: aiHeaders(requestConfig), signal: options?.signal, timeout: IMAGE_REQUEST_TIMEOUT_MS }),
             options?.signal,
         );
-        const images = await parseImagePayload(response.data);
+        const images = await parseImagePayload(response.data, format);
         return images;
     } catch (error) {
         throw new Error(readAxiosError(error, apiText("requestFailed")));

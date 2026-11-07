@@ -239,6 +239,9 @@ export function getPluginTemplates(): Record<ModelCapability, PluginTemplate[]> 
  * @param {string} params.quality - "low" | "medium" | "high" | "xhigh" | "max"
  * @param {number} params.count - number of images
  * @param {string} [params.background] - "transparent" when requested
+ * @param {string} params.outputFormat - "png" | "jpeg" | "webp" | "gif"
+ * @param {number} params.frameCount - gif frame count, 2-16
+ * @param {number} params.frameDuration - gif milliseconds per frame, 20-2000
  * @param {string} model
  * @param {string} baseUrl
  * @param {string} apiKey
@@ -253,13 +256,26 @@ async function generateImage({
     quality,
     count,
     background,
+    outputFormat,
+    frameCount,
+    frameDuration,
   },
   model,
   baseUrl,
   apiKey,
   request,
 }) {
-  const apiBase = baseUrl.replace(/\\/v1$/i, "");
+  const apiBase = baseUrl.trim().replace(/\\/+$/, "").replace(/\\/v1$/i, "");
+  const format = outputFormat || "png";
+  const gifFields = format === "gif" ? { frame_count: frameCount, frame_duration_ms: frameDuration } : {};
+  const supportsTransparency = format === "png" || format === "webp";
+  const mime = format === "gif" ? "image/gif" : format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
+  const dataUrlFor = (item) => {
+    if (!item.b64_json) return item.url;
+    const actualMime = item.b64_json.startsWith("R0lGOD") ? "image/gif" : item.b64_json.startsWith("iVBORw0KG") ? "image/png" : item.b64_json.startsWith("/9j/") ? "image/jpeg" : item.b64_json.startsWith("UklGR") ? "image/webp" : mime;
+    return \`data:\${actualMime};base64,\${item.b64_json}\`;
+  };
+  const needsResponseFormat = !/gpt-image/.test(model || "");
   if (images.length === 0) {
     const data = await request({
       method: "post",
@@ -272,15 +288,17 @@ async function generateImage({
         model: model,
         prompt: prompt,
         n: count,
-        size: size,
-        quality: quality,
-        background: background,
-        response_format: "b64_json",
+        ...(size ? { size: size } : {}),
+        ...(quality ? { quality: quality } : {}),
+        ...(background && supportsTransparency ? { background: background } : {}),
+        ...(needsResponseFormat ? { response_format: "b64_json" } : {}),
+        output_format: format,
+        ...gifFields,
       },
     });
     const urls = [];
     for (const item of data.data || []) {
-      urls.push(item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+      urls.push(dataUrlFor(item));
     }
     return urls;
   }
@@ -289,10 +307,15 @@ async function generateImage({
   form.set("model", model);
   form.set("prompt", prompt);
   form.set("n", String(count));
-  form.set("size", size);
-  form.set("quality", quality);
-  form.set("background", background);
-  form.set("response_format", "b64_json");
+  if (size) form.set("size", size);
+  if (quality) form.set("quality", quality);
+  if (background && supportsTransparency) form.set("background", background);
+  if (needsResponseFormat) form.set("response_format", "b64_json");
+  form.set("output_format", format);
+  if (format === "gif") {
+    form.set("frame_count", String(frameCount));
+    form.set("frame_duration_ms", String(frameDuration));
+  }
   const imageField = images.length > 1 ? "image[]" : "image";
   for (const dataUrl of images) {
     form.append(imageField, await (await fetch(dataUrl)).blob(), "ref.png");
@@ -307,7 +330,7 @@ async function generateImage({
   });
   const urls = [];
   for (const item of edited.data || []) {
-    urls.push(item.b64_json ? \`data:image/png;base64,\${item.b64_json}\` : item.url);
+    urls.push(dataUrlFor(item));
   }
   return urls;
 }
@@ -430,6 +453,121 @@ return await generateImage({
   baseUrl,
   apiKey,
   request,
+});`,
+        },
+        {
+            label: i18n.t("modelPlugin.templates.asyncImage"),
+            script: `/**
+ * Async image task: POST /v1/images creates a task, then GET /v1/images/{id} polls it.
+ * Use this for relays that only expose the image task contract.
+ * The channel Base URL may be the site root, end with /openapi, or end with /openapi/v1.
+ * Remove output_format / frame_* below when a relay rejects unknown fields.
+ * @param {string} prompt
+ * @param {string[]} images - reference images as data URLs; empty for text-to-image
+ * @param {object} params
+ * @param {string} params.size - output size or aspect ratio, e.g. "1024x1024", "16:9", "auto"
+ * @param {string} params.quality - "low" | "medium" | "high"; omitted when auto
+ * @param {string} params.outputFormat - "png" | "jpeg" | "webp" | "gif"
+ * @param {number} params.frameCount - gif frame count, 2-16
+ * @param {number} params.frameDuration - gif milliseconds per frame, 20-2000
+ * @param {string} model
+ * @param {string} baseUrl
+ * @param {string} apiKey
+ * @param {function} request
+ * @param {function} poll
+ * @returns {Promise<string[]>} image URLs
+ */
+async function generateImage({
+  prompt,
+  images,
+  params: {
+    size,
+    quality,
+    outputFormat,
+    frameCount,
+    frameDuration,
+  },
+  model,
+  baseUrl,
+  apiKey,
+  request,
+  poll,
+}) {
+  const apiBase = baseUrl.trim().replace(/\\/+$/, "").replace(/\\/v1$/i, "");
+  const format = outputFormat || "png";
+  const mime = format === "gif" ? "image/gif" : format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: \`Bearer \${apiKey}\`,
+  };
+  const collectUrls = (data) => {
+    const list = [
+      data.image_url,
+      data.download_url,
+      ...(Array.isArray(data.images) ? data.images : []),
+      ...(Array.isArray(data.resultUrls) ? data.resultUrls : []),
+      ...(Array.isArray(data.data) ? data.data : []),
+    ];
+    return list.map((item) => {
+      if (typeof item === "string") return item;
+      if (!item) return "";
+      if (item.url) return item.url;
+      return item.b64_json ? \`data:\${mime};base64,\${item.b64_json}\` : "";
+    }).filter(Boolean);
+  };
+
+  const created = await request({
+    method: "post",
+    url: \`\${apiBase}/v1/images\`,
+    headers,
+    data: {
+      model: model,
+      prompt: prompt,
+      ...(images.length ? { images: images } : {}),
+      ...(size && size !== "auto" ? { aspect_ratio: size } : {}),
+      ...(quality && ["low", "medium", "high"].includes(quality) ? { quality: quality } : {}),
+      ...(format !== "png" ? { output_format: format } : {}),
+      ...(format === "gif" ? { frame_count: Number(frameCount), frame_duration_ms: Number(frameDuration) } : {}),
+    },
+  });
+  const immediate = collectUrls(created?.data || created || {});
+  if (immediate.length) return immediate;
+
+  const taskId = created?.data?.id || created?.data?.taskId || created?.data?.task_id || created?.id || created?.taskId || created?.task_id || created?.task?.id;
+  if (!taskId) throw new Error("image task response has no task id");
+
+  return await poll(
+    () => request({
+      method: "get",
+      url: \`\${apiBase}/v1/images/\${taskId}\`,
+      headers: headers,
+    }),
+    (state) => {
+      const payload = state && typeof state === "object" ? state : {};
+      const data = payload.data && !Array.isArray(payload.data) ? payload.data : payload;
+      const status = String(payload.status || data.status || "").toLowerCase();
+      if (status === "failed" || status === "cancelled" || status === "error") {
+        const error = data.error || payload.error;
+        throw new Error(error && error.message ? error.message : error || "image generation failed");
+      }
+      if (!["succeeded", "completed", "success", "done"].includes(status)) return null;
+      const urls = collectUrls(data);
+      if (!urls.length) throw new Error("image task returned no image");
+      return urls;
+    },
+    { intervalMs: 2500, timeoutMs: 300000 },
+  );
+}
+
+return await generateImage({
+  prompt,
+  images,
+  params,
+  model,
+  baseUrl,
+  apiKey,
+  request,
+  poll,
 });`,
         },
     ],
@@ -1039,7 +1177,8 @@ return await generateText({
 }
 
 /** Normalize whatever an image script returns into the app's generated-image shape. */
-export function normalizePluginImages(result: unknown): string[] {
+export function normalizePluginImages(result: unknown, format = "png"): string[] {
+    const mime = format === "gif" ? "image/gif" : format === "jpeg" ? "image/jpeg" : format === "webp" ? "image/webp" : "image/png";
     const items = Array.isArray(result) ? result : [result];
     const urls = items
         .map((item) => {
@@ -1048,7 +1187,10 @@ export function normalizePluginImages(result: unknown): string[] {
                 const record = item as Record<string, unknown>;
                 if (typeof record.dataUrl === "string") return record.dataUrl;
                 if (typeof record.url === "string") return record.url;
-                if (typeof record.b64_json === "string") return `data:image/png;base64,${record.b64_json}`;
+                if (typeof record.b64_json === "string") {
+                    const actualMime = record.b64_json.startsWith("R0lGOD") ? "image/gif" : record.b64_json.startsWith("iVBORw0KG") ? "image/png" : record.b64_json.startsWith("/9j/") ? "image/jpeg" : record.b64_json.startsWith("UklGR") ? "image/webp" : mime;
+                    return `data:${actualMime};base64,${record.b64_json}`;
+                }
             }
             return "";
         })

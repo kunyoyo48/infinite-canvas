@@ -7,6 +7,8 @@ description: Implemented changes that still need manual verification
 
 The current release needs manual verification in these areas:
 
+- Image output format and GIF: the canvas image settings and image workbench should offer PNG / JPEG / WebP / GIF output. Choosing GIF should reveal frame count (2–16) and frame interval (20–2000 ms), and `/images/generations` and `/images/edits` should send `output_format=gif` together with `frame_count` and `frame_duration_ms`. The result should animate in the workbench and on the canvas instead of showing a static thumbnail, keep its settings in generation history and node retries, and download or export with a `.gif` extension. PNG / JPEG / WebP should behave as before. The new async image task template should create a task and poll `/v1/images/{id}` for relays that only expose that contract.
+
 - Image generation count: the maximum count in the canvas image settings popover, the image workbench, the canvas default image count preference, and Agent image config should be 5000. Quick options stay at 1–10, and requests should submit the selected count.
 
 - Canvas batch generation and the image workbench: generating a large image count (for example 500) should keep only a few requests in flight, so the connection is not saturated and cards do not mostly fail with "Network interrupted". Expanding a canvas batch should show a near-square grid instead of a tall narrow strip, and panning across the expanded cards should keep them displayed instead of disappearing and slowly re-appearing after the drag stops.
