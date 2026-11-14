@@ -14,6 +14,7 @@ export function AgentChatComposer({
     attachments = [],
     disabled,
     sending,
+    syncing,
     placeholder,
     theme,
     onPromptChange,
@@ -36,6 +37,7 @@ export function AgentChatComposer({
     attachments?: AgentChatAttachment[];
     disabled?: boolean;
     sending?: boolean;
+    syncing?: boolean;
     placeholder: string;
     theme: (typeof canvasThemes)[keyof typeof canvasThemes];
     onPromptChange: (value: string) => void;
@@ -57,7 +59,7 @@ export function AgentChatComposer({
     const { t } = useTranslation();
     const fileInputRef = useRef<HTMLInputElement>(null);
     const canvasReferences = useAgentStore((state) => state.canvasReferences);
-    const canSubmit = !disabled && !sending && Boolean(prompt.trim() || attachments.length || canvasReferences.length);
+    const canSubmit = !disabled && !sending && !syncing && Boolean(prompt.trim() || attachments.length || canvasReferences.length);
     return (
         <div className="px-2 pb-2 pt-2" onWheelCapture={(event) => event.stopPropagation()}>
             <div className="rounded-[24px] border px-3 pb-3 pt-3 shadow-lg" style={{ background: theme.toolbar.panel, borderColor: theme.node.stroke }}>
