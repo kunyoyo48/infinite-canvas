@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { App, Button, Tooltip } from "antd";
 import dayjs from "dayjs";
-import { Bot, History, MessageSquare, PanelRightClose, PlugZap, Plus, Sparkles, Terminal } from "lucide-react";
+import { Bot, History, LoaderCircle, MessageSquare, PanelRightClose, PlugZap, Plus, Sparkles, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import i18n from "@/i18n";
@@ -89,6 +89,7 @@ type AgentWorkspaceEvent = { activeThreadId?: string; threadId?: string; sourceC
 type AgentChatEvent = { threadId?: string; turnId?: string; sourceClientId?: string; replayed?: boolean; message?: AgentChatItem };
 type AgentBootstrapEvent = { type?: "codex.preparing" | "codex.prepare_failed" | "mcp.startup" | "mcp.complete"; phase?: "preheat" | "runtime"; threadId?: string; name?: string; status?: "starting" | "ready" | "failed" | "cancelled"; error?: string | null; failureReason?: string | null };
 type AgentClientGlobal = typeof globalThis & { __infiniteCanvasAgentClientIdPromise?: Promise<string> };
+type ComposerHintState = { text: string; busy: boolean; failed: boolean; action?: string; onAction?: () => void };
 
 function authoritativeHistoryTurnKeys(threadId: string, settledTurnIds: string[]) {
     return new Set(settledTurnIds.map((turnId) => `${threadId}\0${turnId}`));
@@ -185,6 +186,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const clientIdRef = useRef("");
     const [clientReady, setClientReady] = useState(false);
     const loadThreadsSequenceRef = useRef(0);
+    const pendingThreadLoadsRef = useRef(new Set<number>());
     const threadMessagesRef = useRef(new Map<string, AgentChatItem[]>());
     const authoritativeHistoryTurnsRef = useRef(new Set<string>());
     const liveTurnKeysRef = useRef(new Set<string>());
@@ -290,7 +292,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     }, [applyWorkspaceChange, setAgentState]);
     const loadThreads = useCallback(async (skipHistory = false, expectedTurnId = "") => {
         if (!connectedRef.current && !useAgentStore.getState().connected) return;
-        let sequence = ++loadThreadsSequenceRef.current;
+        const loadId = ++loadThreadsSequenceRef.current;
+        let sequence = loadId;
+        pendingThreadLoadsRef.current.add(loadId);
         setAgentState({ loadingThreads: true });
         try {
             const data = await fetchAgentJson<AgentThreadsResponse>(endpoint, token, `/agent/codex/threads`);
@@ -313,7 +317,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         } catch (error) {
             addEventLog(rt("historyReadFailed"), error);
         } finally {
-            if (sequence === loadThreadsSequenceRef.current && !threadOperationRef.current) setAgentState({ loadingThreads: false });
+            pendingThreadLoadsRef.current.delete(loadId);
+            // The latest load always releases the flag, and so does a stale load that was invalidated mid-flight.
+            // Without the second condition a conversation change during loading left the composer disabled forever.
+            if (!threadOperationRef.current && (sequence === loadThreadsSequenceRef.current || !pendingThreadLoadsRef.current.size)) setAgentState({ loadingThreads: false });
         }
     }, [applyConversationState, applyWorkspaceChange, endpoint, loadThreadSnapshot, setAgentState, token]);
     // Imperatively subscribe to canvasContext to keep the ref current and debounce snapshot reports without rerendering the panel.
@@ -576,6 +583,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             source.close();
             connectedRef.current = false;
             loadThreadsSequenceRef.current += 1;
+            pendingThreadLoadsRef.current.clear();
             useAgentSkillStore.getState().reset();
         };
     }, [applyConversationState, applyWorkspaceChange, clientReady, enabled, endpoint, loadSkills, loadThreads, message, setAgentState, token]);
@@ -978,6 +986,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     function clearAgentSession(patch: Parameters<typeof setAgentState>[0] = {}) {
         loadThreadsSequenceRef.current += 1;
+        pendingThreadLoadsRef.current.clear();
         threadMessagesRef.current.clear();
         authoritativeHistoryTurnsRef.current.clear();
         liveTurnKeysRef.current.clear();
@@ -1315,6 +1324,31 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     const connectionStatus = t(connectError ? "agent.status.failed" : connected ? "agent.status.connected" : enabled ? "agent.status.connecting" : "agent.status.disconnected");
     const connectionStatusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
+    // The composer stays disabled while the agent is unreachable or a new conversation is still initializing; make the
+    // reason visible instead of leaving a dead input with the normal placeholder. Thread sync does not block typing,
+    // only sending, so users can draft a prompt while history loads and still see why the send button is inactive.
+    let composerHint: ComposerHintState | null = null;
+    if (!connected) {
+        composerHint = {
+            text: connectError || (enabled ? activity : t("agent.panel.notConnected")),
+            busy: enabled && !connectError,
+            failed: Boolean(connectError),
+            ...(!enabled || connectError ? { action: t("agent.panel.connectionSettingsAction"), onAction: () => setAgentState({ activeTab: "setup" }) } : {}),
+        };
+    } else if (!conversationReady) {
+        composerHint = conversation.status === "failed"
+            ? { text: conversation.error || t("agent.panel.initFailed"), busy: false, failed: true }
+            : { text: conversation.status === "running" ? t("agent.runtime.codexRunning") : t("agent.panel.mcpInitializing"), busy: true, failed: false };
+    } else if (loadingThreads) {
+        composerHint = { text: t("agent.panel.syncing"), busy: true, failed: false, action: t("agent.panel.resync"), onAction: () => void loadThreads() };
+    }
+    const composerPlaceholder = !connected
+        ? (enabled ? activity : t("agent.panel.notConnected"))
+        : conversation.status === "idle" || conversation.status === "preparing"
+            ? t("agent.panel.mcpInitializing")
+            : conversation.status === "failed"
+                ? t("agent.panel.initFailed")
+                : t("agent.panel.placeholder");
     const content = (
         <>
             <AgentPanelTabs
@@ -1400,16 +1434,14 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     <AgentChatTimeline theme={theme} pendingTool={pendingTool} pendingApprovals={pendingApprovals} sending={sending} waiting={waiting} onRejectTool={rejectPendingTool} onApproveTool={approvePendingTool} onApprovalDecision={decideApproval} />
                     <AgentTaskProgress theme={theme} busy={sending || waiting} />
                     {tokenUsage ? <AgentUsageBar usage={tokenUsage} theme={theme} /> : null}
+                    {composerHint && (composerHint.action || composerHint.text !== composerPlaceholder) ? <ComposerHint hint={composerHint} theme={theme} /> : null}
                     <AgentChatComposer
                         prompt={prompt}
                         attachments={attachments.map((attachment) => agentAttachmentToChatAttachment(attachment, endpoint, token))}
-                        disabled={!connected || !conversationReady || loadingThreads}
+                        disabled={!connected || !conversationReady}
+                        syncing={loadingThreads}
                         sending={sending || waiting}
-                        placeholder={conversation.status === "idle" || conversation.status === "preparing"
-                            ? t("agent.panel.mcpInitializing")
-                            : conversation.status === "failed"
-                                ? t("agent.panel.initFailed")
-                                : t("agent.panel.placeholder")}
+                        placeholder={composerPlaceholder}
                         theme={theme}
                         onPromptChange={(prompt) => setAgentState({ prompt })}
                         onSubmit={sendPrompt}
@@ -1450,6 +1482,18 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     if (headless) return null;
     return embedded ? content : null;
+}
+
+function ComposerHint({ hint, theme }: { hint: ComposerHintState; theme: (typeof canvasThemes)[keyof typeof canvasThemes] }) {
+    return (
+        <div role="status" aria-live="polite" className="flex min-w-0 items-center justify-between gap-2 px-4 pt-2 text-xs leading-5" style={{ color: hint.failed ? "#dc2626" : theme.node.muted }}>
+            <span className="flex min-w-0 items-center gap-1.5">
+                {hint.busy ? <LoaderCircle className="size-3.5 shrink-0 animate-spin" /> : <PlugZap className="size-3.5 shrink-0" />}
+                <span className="truncate">{hint.text}</span>
+            </span>
+            {hint.action ? <button type="button" className="shrink-0 rounded-md px-2 py-0.5 font-medium transition hover:bg-black/5 dark:hover:bg-white/10" style={{ color: theme.node.text }} onClick={hint.onAction}>{hint.action}</button> : null}
+        </div>
+    );
 }
 
 function acquireAgentClientId() {
