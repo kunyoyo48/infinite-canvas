@@ -260,8 +260,12 @@ async function readDirectAgentError(response: Response) {
 export async function listDirectAgentModels(apiKey: string, baseUrl: string, signal?: AbortSignal) {
     const response = await fetch(directAgentUrl(baseUrl, "/models"), { headers: { authorization: `Bearer ${apiKey}` }, signal });
     if (!response.ok) throw new DirectAgentApiError(await readDirectAgentError(response), response.status);
-    const body = (await response.json()) as { data?: Array<{ id?: unknown }> };
-    return (body.data || []).map((item) => String(item.id || "")).filter(Boolean);
+    const body = (await response.json()) as { data?: Array<{ id?: unknown }>; success?: boolean; message?: string; error?: string | { message?: string } };
+    const models = (Array.isArray(body.data) ? body.data : []).map((item) => String(item?.id || "")).filter(Boolean);
+    // new-api relays answer 200 with `success: false` and the real reason instead of an error status.
+    const message = typeof body.error === "string" ? body.error : body.error?.message || (body.success === false ? body.message : "");
+    if (!models.length && message) throw new DirectAgentApiError(message, response.status);
+    return models;
 }
 
 async function requestDirectAgent(apiKey: string, baseUrl: string, body: Record<string, unknown>, signal?: AbortSignal) {
