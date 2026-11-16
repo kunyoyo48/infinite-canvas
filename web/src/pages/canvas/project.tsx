@@ -196,6 +196,8 @@ function InfiniteCanvasPage() {
     const historyPausedRef = useRef(false);
     const rafRef = useRef<number | null>(null);
     const nodeDraggingRef = useRef(false);
+    // Touch taps emit compatibility mouse events after touchend; one-shot flag skips the extra drag they would start.
+    const suppressCompatMouseRef = useRef(false);
     const dragRef = useRef<{
         isDraggingNode: boolean;
         hasMoved: boolean;
@@ -975,7 +977,8 @@ function InfiniteCanvasPage() {
         if (!referencePickerNodeId || referenceConnectedNodeIds.has(fromNodeId)) return;
         const source = nodesRef.current.find((node) => node.id === fromNodeId);
         if (!source || !isCanvasReferenceNode(source, nodesRef.current)) return;
-        setConnections((prev) => [...prev, { id: nanoid(), fromNodeId, toNodeId: referencePickerNodeId }]);
+        const toNodeId = referencePickerNodeId;
+        setConnections((prev) => (prev.some((connection) => connection.fromNodeId === fromNodeId && connection.toNodeId === toNodeId) ? prev : [...prev, { id: nanoid(), fromNodeId, toNodeId }]));
     }, [referenceConnectedNodeIds, referencePickerNodeId]);
 
     useEffect(() => {
@@ -1299,34 +1302,59 @@ function InfiniteCanvasPage() {
         [selectNodeByEvent],
     );
 
-    const handleNodeMouseDown = useCallback((event: ReactMouseEvent, nodeId: string) => {
-        event.stopPropagation();
-        // Capture already selected the node; this only starts dragging, with a fallback selection if capture did not run.
-        const currentNodes = nodesRef.current;
-        const nextSelected = pendingSelectionRef.current ?? selectNodeByEvent(event, nodeId).nextSelected;
-        pendingSelectionRef.current = null;
-        const dragIds = new Set(nextSelected);
-        currentNodes.forEach((node) => {
-            if (!nextSelected.has(node.id)) return;
-            if (node.type === CanvasNodeType.Group) {
-                currentNodes.forEach((child) => {
-                    if (child.metadata?.groupId === node.id) dragIds.add(child.id);
-                });
+    const startNodeDrag = useCallback(
+        (point: Pick<ReactMouseEvent, "clientX" | "clientY" | "shiftKey" | "metaKey" | "ctrlKey">, nodeId: string) => {
+            // Capture already selected the node; this only starts dragging, with a fallback selection if capture did not run.
+            const currentNodes = nodesRef.current;
+            const nextSelected = pendingSelectionRef.current ?? selectNodeByEvent(point, nodeId).nextSelected;
+            pendingSelectionRef.current = null;
+            const dragIds = new Set(nextSelected);
+            currentNodes.forEach((node) => {
+                if (!nextSelected.has(node.id)) return;
+                if (node.type === CanvasNodeType.Group) {
+                    currentNodes.forEach((child) => {
+                        if (child.metadata?.groupId === node.id) dragIds.add(child.id);
+                    });
+                }
+            });
+            const initialSelectedNodes = new Map(currentNodes.filter((node) => dragIds.has(node.id)).map((node): [string, { x: number; y: number }] => [node.id, { x: node.position.x, y: node.position.y }]));
+            dragRef.current = {
+                isDraggingNode: true,
+                hasMoved: false,
+                startX: point.clientX,
+                startY: point.clientY,
+                initialSelectedNodes,
+                movedIds: new Set(initialSelectedNodes.keys()),
+            };
+            historyPausedRef.current = true;
+            nodeDraggingRef.current = true;
+            setIsNodeDragging(true);
+        },
+        [selectNodeByEvent],
+    );
+
+    const handleNodeMouseDown = useCallback(
+        (event: Pick<ReactMouseEvent, "clientX" | "clientY" | "shiftKey" | "metaKey" | "ctrlKey">, nodeId: string) => {
+            if (suppressCompatMouseRef.current) {
+                suppressCompatMouseRef.current = false;
+                return;
             }
-        });
-        const initialSelectedNodes = new Map(currentNodes.filter((node) => dragIds.has(node.id)).map((node): [string, { x: number; y: number }] => [node.id, { x: node.position.x, y: node.position.y }]));
-        dragRef.current = {
-            isDraggingNode: true,
-            hasMoved: false,
-            startX: event.clientX,
-            startY: event.clientY,
-            initialSelectedNodes,
-            movedIds: new Set(initialSelectedNodes.keys()),
-        };
-        historyPausedRef.current = true;
-        nodeDraggingRef.current = true;
-        setIsNodeDragging(true);
-    }, []);
+            startNodeDrag(event, nodeId);
+        },
+        [startNodeDrag],
+    );
+
+    const handleNodeTouchStart = useCallback(
+        (event: Pick<ReactMouseEvent, "clientX" | "clientY" | "shiftKey" | "metaKey" | "ctrlKey">, nodeId: string) => {
+            suppressCompatMouseRef.current = true;
+            // Touch has no mousedown capture phase, so never reuse a selection left over from an earlier mouse gesture.
+            pendingSelectionRef.current = null;
+            setContextMenu(null);
+            setSelectedConnectionId(null);
+            startNodeDrag(event, nodeId);
+        },
+        [startNodeDrag],
+    );
 
     const finishNodeDrag = useCallback((clientX?: number, clientY?: number) => {
         if (rafRef.current) {
@@ -1385,7 +1413,7 @@ function InfiniteCanvasPage() {
     }, []);
 
     const handleGlobalMouseMove = useCallback(
-        (event: MouseEvent) => {
+        (event: Pick<MouseEvent, "clientX" | "clientY">) => {
             const currentViewport = viewportRef.current;
 
             if (dragRef.current.isDraggingNode) {
@@ -1488,19 +1516,57 @@ function InfiniteCanvasPage() {
     useEffect(() => {
         const handlePointerUp = (event: PointerEvent) => finishNodeDrag(event.clientX, event.clientY);
         const cancelNodeDrag = () => finishNodeDrag();
+        const handlePointerCancel = (event: PointerEvent) => {
+            // A touch drag ends through touchend/touchcancel; ignoring its pointercancel keeps the drag alive if a browser starts a gesture.
+            if (event.pointerType === "touch") return;
+            finishNodeDrag();
+        };
+        const handleTouchMove = (event: TouchEvent) => {
+            const touch = event.touches[0];
+            if (!dragRef.current.isDraggingNode || !touch) return;
+            // A non-cancelable move means the browser already committed the gesture to scrolling; stop instead of moving the node.
+            if (!event.cancelable) {
+                finishNodeDrag();
+                return;
+            }
+            // Registered as non-passive: block page scrolling and browser gestures while the finger is moving a node.
+            event.preventDefault();
+            handleGlobalMouseMove(touch);
+        };
+        const handleTouchEnd = (event: TouchEvent) => {
+            const touch = event.changedTouches[0];
+            finishNodeDrag(touch?.clientX, touch?.clientY);
+        };
+        // A real mouse pointerdown means any pending touch compatibility mousedown never happened; do not skip it.
+        const handleWindowPointerDown = (event: PointerEvent) => {
+            if (event.pointerType === "mouse") suppressCompatMouseRef.current = false;
+        };
+        const cancelWhenHidden = () => {
+            if (document.visibilityState === "hidden") finishNodeDrag();
+        };
         window.addEventListener("mousemove", handleGlobalMouseMove);
         window.addEventListener("mouseup", handleGlobalMouseUp);
         window.addEventListener("pointerup", handlePointerUp);
-        window.addEventListener("pointercancel", cancelNodeDrag);
+        window.addEventListener("pointercancel", handlePointerCancel);
+        window.addEventListener("pointerdown", handleWindowPointerDown);
         window.addEventListener("blur", cancelNodeDrag);
+        window.addEventListener("touchmove", handleTouchMove, { passive: false });
+        window.addEventListener("touchend", handleTouchEnd);
+        window.addEventListener("touchcancel", cancelNodeDrag);
         window.addEventListener("pointermove", handleGlobalPointerMove);
+        document.addEventListener("visibilitychange", cancelWhenHidden);
         return () => {
             window.removeEventListener("mousemove", handleGlobalMouseMove);
             window.removeEventListener("mouseup", handleGlobalMouseUp);
             window.removeEventListener("pointerup", handlePointerUp);
-            window.removeEventListener("pointercancel", cancelNodeDrag);
+            window.removeEventListener("pointercancel", handlePointerCancel);
+            window.removeEventListener("pointerdown", handleWindowPointerDown);
             window.removeEventListener("blur", cancelNodeDrag);
+            window.removeEventListener("touchmove", handleTouchMove);
+            window.removeEventListener("touchend", handleTouchEnd);
+            window.removeEventListener("touchcancel", cancelNodeDrag);
             window.removeEventListener("pointermove", handleGlobalPointerMove);
+            document.removeEventListener("visibilitychange", cancelWhenHidden);
         };
     }, [finishNodeDrag, handleGlobalMouseMove, handleGlobalMouseUp, handleGlobalPointerMove]);
 
@@ -3288,6 +3354,7 @@ function InfiniteCanvasPage() {
                             renderPanel={renderNodePanel}
                             renderNodeContent={renderNodeContentPanel}
                             onMouseDown={handleNodeMouseDown}
+                            onTouchDragStart={handleNodeTouchStart}
                             onSelectCapture={handleNodeSelectCapture}
                             onHoverStart={handleNodeHoverStart}
                             onHoverEnd={handleNodeHoverEnd}

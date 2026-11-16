@@ -17,6 +17,8 @@ import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-refer
 import { useTranslation } from "react-i18next";
 
 type ResizeCorner = "top-left" | "top-right" | "bottom-left" | "bottom-right";
+// Mouse drags and touch drags both start from the same node body handler; touch has no modifier keys of its own.
+type NodeDragStartEvent = { clientX: number; clientY: number; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean };
 const selectionBlue = "#2f80ff";
 
 type CanvasNodeProps = {
@@ -38,7 +40,8 @@ type CanvasNodeProps = {
     groupChildCount?: number;
     isGroupDropTarget?: boolean;
     batchExpanded?: boolean;
-    onMouseDown: (event: React.MouseEvent, nodeId: string) => void;
+    onMouseDown: (event: NodeDragStartEvent, nodeId: string) => void;
+    onTouchDragStart?: (event: NodeDragStartEvent, nodeId: string) => void;
     onSelectCapture?: (event: React.MouseEvent, nodeId: string) => void;
     onHoverStart: (nodeId: string) => void;
     onHoverEnd: (nodeId: string) => void;
@@ -106,6 +109,7 @@ export const CanvasNode = React.memo(function CanvasNode({
     isGroupDropTarget = false,
     batchExpanded = false,
     onMouseDown,
+    onTouchDragStart,
     onSelectCapture,
     onHoverStart,
     onHoverEnd,
@@ -371,11 +375,27 @@ export const CanvasNode = React.memo(function CanvasNode({
                     boxShadow: isGroupDropTarget ? `0 0 0 2px ${selectionBlue}66, inset 0 0 0 999px ${selectionBlue}10` : isActive ? `0 0 0 1px ${selectionBlue}55` : isRelated ? `0 0 0 1px ${theme.node.muted}55, 0 18px 48px rgba(0,0,0,.14)` : undefined,
                 }}
                 onMouseDown={(event) => {
+                    event.stopPropagation();
                     if (!referenceSelectionState) onMouseDown(event, data.id);
-                    else if (event.button === 0 && referenceSelectionState === "available") {
-                        event.stopPropagation();
-                        onSelectReference?.(data.id);
+                    else if (event.button === 0 && referenceSelectionState === "available") onSelectReference?.(data.id);
+                }}
+                onTouchStart={(event) => {
+                    if (event.touches.length !== 1) return;
+                    if (referenceSelectionState) {
+                        if (referenceSelectionState === "available") {
+                            event.stopPropagation();
+                            onSelectReference?.(data.id);
+                        }
+                        return;
                     }
+                    // Taps on node controls must keep working; only empty drag surface starts moving the node.
+                    if (event.target instanceof Element && event.target.closest("button,a,input,textarea,select,audio,[contenteditable='true'],[role='combobox'],.ant-select,.ant-segmented")) return;
+                    // Let long text and batch content keep scrolling under the finger instead of dragging the node.
+                    const scrollable = event.target instanceof Element ? event.target.closest(".thin-scrollbar") : null;
+                    if (scrollable && scrollable.scrollHeight > scrollable.clientHeight + 1) return;
+                    event.stopPropagation();
+                    const touch = event.touches[0];
+                    (onTouchDragStart ?? onMouseDown)({ clientX: touch.clientX, clientY: touch.clientY, shiftKey: false, metaKey: false, ctrlKey: false }, data.id);
                 }}
                 onDoubleClick={(event) => {
                     if (referenceSelectionState) {
@@ -647,6 +667,7 @@ function ExpandedTextCard({ node, text, index, onSetPrimary }: { node: CanvasNod
             }
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
+            onTouchStart={(event) => event.stopPropagation()}
         >
             {text.content ? (
                 <>
@@ -901,6 +922,7 @@ function ExpandedImageCard({ node, image, index, scale, onView, onSetPrimary, on
             }
             onMouseDown={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
+            onTouchStart={(event) => event.stopPropagation()}
             onDoubleClick={(event) => {
                 if (!image.content || (event.target instanceof Element && event.target.closest("button"))) return;
                 event.stopPropagation();
