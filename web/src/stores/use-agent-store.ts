@@ -38,6 +38,7 @@ export type AgentConversationState = {
     error?: string;
 };
 export type AgentPanelTab = "chat" | "setup" | "history" | "skills" | "log";
+export type AgentConnectionMode = "local" | "direct";
 
 const CONNECT_TIMEOUT_MS = 6000;
 let agentSource: EventSource | null = null;
@@ -49,6 +50,9 @@ type AgentStore = {
     panelMounted: boolean;
     panelClosing: boolean;
     canvasContext: AgentCanvasContext | null;
+    connectionMode: AgentConnectionMode;
+    directApiKey: string;
+    directModel: string;
     url: string;
     token: string;
     connected: boolean;
@@ -101,6 +105,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     panelMounted: true,
     panelClosing: false,
     canvasContext: null,
+    connectionMode: typeof window === "undefined" ? "local" : localStorage.getItem("canvas-agent-connection-mode") === "direct" ? "direct" : "local",
+    directApiKey: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-direct-api-key") || "",
+    directModel: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-direct-model") || "",
     url: typeof window === "undefined" ? "http://127.0.0.1:17371" : localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
     token: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-token") || "",
     connected: false,
@@ -145,6 +152,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     togglePanel: () => (get().panelOpen ? get().closePanel() : get().openPanel()),
     setCanvasContext: (canvasContext) => set({ canvasContext }),
     connectAgent: (options) => {
+        if (get().connectionMode === "direct") return;
         const silent = options?.silent ?? false;
         const endpoint = get().url.trim().replace(/\/$/, "");
         const token = get().token.trim();
