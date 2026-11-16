@@ -1,11 +1,11 @@
-import { Fragment } from "react";
+import { Fragment, useRef, useState } from "react";
 import { App, Button, Input, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { Copy, KeyRound, Link2, Lock, PlugZap } from "lucide-react";
+import { Activity, Copy, KeyRound, Link2, Lock, PlugZap, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { DIRECT_AGENT_BASE_URL, DIRECT_AGENT_DEFAULT_MODEL } from "@/services/api/direct-agent";
+import { DIRECT_AGENT_BASE_URL, DIRECT_AGENT_DEFAULT_MODEL, listDirectAgentModels } from "@/services/api/direct-agent";
 import type { AgentConnectionMode } from "@/stores/use-agent-store";
 
 const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove infinite-canvas";
@@ -50,12 +50,48 @@ export function AgentConnectView({
 }) {
     const { t } = useTranslation();
     const { message } = App.useApp();
+    const [models, setModels] = useState<string[]>([]);
+    const [modelsRequest, setModelsRequest] = useState<"fetch" | "test" | null>(null);
+    const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+    const modelsRequestIdRef = useRef(0);
     const steps = [{ title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText") }, { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: "npx -y @basketikun/canvas-agent@latest" }];
     const statusText = connectError ? t("agent.status.failed") : connected ? activity : enabled ? t("agent.status.connecting") : t("agent.status.disconnected");
     const statusColor = connectError ? "#dc2626" : connected ? "#16a34a" : enabled ? "#d97706" : theme.node.muted;
     const copyCommand = (command: string) => {
         copyToClipboard(command);
         message.success(t("agent.connect.commandCopied"));
+    };
+    const requestModels = async (kind: "fetch" | "test") => {
+        const apiKey = directApiKey.trim();
+        if (!apiKey) {
+            message.warning(t("agent.direct.keyRequired"));
+            return;
+        }
+        const requestId = ++modelsRequestIdRef.current;
+        setModelsRequest(kind);
+        if (kind === "test") setTestResult(null);
+        try {
+            const list = Array.from(new Set(await listDirectAgentModels(apiKey))).sort();
+            if (requestId !== modelsRequestIdRef.current) return;
+            setModels(list);
+            if (kind === "test") setTestResult({ ok: true, text: t("agent.connect.apiTestOk", { count: list.length }) });
+            else if (list.length) message.success(t("agent.connect.apiModelsFetched", { count: list.length }));
+            else message.warning(t("agent.connect.apiModelsEmpty"));
+        } catch (error) {
+            if (requestId !== modelsRequestIdRef.current) return;
+            const text = error instanceof Error ? error.message : t("agent.direct.connectFailed");
+            if (kind === "test") setTestResult({ ok: false, text });
+            else message.error(text);
+        } finally {
+            if (requestId === modelsRequestIdRef.current) setModelsRequest(null);
+        }
+    };
+    const changeApiKey = (value: string) => {
+        modelsRequestIdRef.current += 1;
+        setModelsRequest(null);
+        setModels([]);
+        setTestResult(null);
+        onDirectApiKeyChange(value);
     };
     const codexPluginReminder = (
         <div className="rounded-lg border px-3 py-2.5 text-xs leading-5" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
@@ -196,9 +232,14 @@ export function AgentConnectView({
                                         {t("agent.connect.apiText")}
                                     </div>
                                 </div>
-                                <Button className="!h-8 !px-3" type={enabled ? "default" : "primary"} icon={<PlugZap className="size-4" />} onClick={onToggleEnabled}>
-                                    {t(busy ? "agent.connect.apiCancelConnecting" : enabled ? "agent.connect.disconnect" : "agent.connect.apiConnect")}
-                                </Button>
+                                <div className="flex shrink-0 items-center gap-1.5">
+                                    <Button className="!h-8 !px-3" icon={<Activity className="size-4" />} loading={modelsRequest === "test"} disabled={!directApiKey.trim() || busy || modelsRequest !== null} onClick={() => void requestModels("test")}>
+                                        {t(modelsRequest === "test" ? "agent.connect.apiTesting" : "agent.connect.apiTest")}
+                                    </Button>
+                                    <Button className="!h-8 !px-3" type={enabled ? "default" : "primary"} icon={<PlugZap className="size-4" />} onClick={onToggleEnabled}>
+                                        {t(busy ? "agent.connect.apiCancelConnecting" : enabled ? "agent.connect.disconnect" : "agent.connect.apiConnect")}
+                                    </Button>
+                                </div>
                             </div>
                             <div className="mt-3 grid gap-2.5">
                                 <label className="grid gap-1.5">
@@ -230,16 +271,49 @@ export function AgentConnectView({
                                         autoComplete="new-password"
                                         prefix={<KeyRound className="mr-1 size-4" style={{ color: theme.node.faint }} />}
                                         value={directApiKey}
-                                        onChange={(event) => onDirectApiKeyChange(event.target.value)}
+                                        onChange={(event) => changeApiKey(event.target.value)}
                                         placeholder={t("agent.connect.apiKeyPlaceholder")}
                                     />
                                 </label>
-                                <label className="grid gap-1.5">
+                                <div className="grid gap-1.5">
                                     <span className="text-xs font-medium" style={{ color: theme.node.muted }}>
                                         {t("agent.connect.apiModel")}
                                     </span>
-                                    <Input size="large" value={directModel} onChange={(event) => onDirectModelChange(event.target.value)} placeholder={DIRECT_AGENT_DEFAULT_MODEL} />
-                                </label>
+                                    <div className="flex items-center gap-2">
+                                        <Input
+                                            className="min-w-0 flex-1"
+                                            size="large"
+                                            aria-label={t("agent.connect.apiModel")}
+                                            value={directModel}
+                                            onChange={(event) => onDirectModelChange(event.target.value)}
+                                            placeholder={DIRECT_AGENT_DEFAULT_MODEL}
+                                        />
+                                        <Button className="shrink-0" size="large" icon={<RefreshCw className="size-4" />} loading={modelsRequest === "fetch"} disabled={!directApiKey.trim() || modelsRequest !== null} onClick={() => void requestModels("fetch")}>
+                                            {t(modelsRequest === "fetch" ? "agent.connect.apiFetchingModels" : "agent.connect.apiFetchModels")}
+                                        </Button>
+                                    </div>
+                                    {models.length ? (
+                                        <div className="thin-scrollbar max-h-40 overflow-y-auto rounded-md border" style={{ borderColor: theme.node.stroke }}>
+                                            {models.map((model) => (
+                                                <button
+                                                    key={model}
+                                                    type="button"
+                                                    className="block w-full truncate px-2.5 py-1.5 text-left text-xs hover:bg-black/5 dark:hover:bg-white/10"
+                                                    style={{ color: model === directModel ? theme.node.text : theme.node.muted, fontWeight: model === directModel ? 600 : undefined }}
+                                                    title={model}
+                                                    onClick={() => onDirectModelChange(model)}
+                                                >
+                                                    {model}
+                                                </button>
+                                            ))}
+                                        </div>
+                                    ) : null}
+                                </div>
+                                {testResult ? (
+                                    <div className="rounded-md border px-2.5 py-2 text-xs leading-5" style={{ borderColor: testResult.ok ? "rgba(22,163,74,.35)" : "rgba(220,38,38,.35)", color: testResult.ok ? "#16a34a" : "#dc2626" }}>
+                                        {testResult.text}
+                                    </div>
+                                ) : null}
                                 {connectError ? (
                                     <div className="rounded-md border px-2.5 py-2 text-xs leading-5" style={{ borderColor: "rgba(220,38,38,.35)", color: "#dc2626" }}>
                                         {connectError}
