@@ -22,7 +22,7 @@ import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type Ag
 import { type CanvasAgentOp, type CanvasAgentSnapshot, summarizeCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
 import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, discoverAgentConfig, fetchAgentJson, interruptCodexTurn, postCodexApproval, postState, postToolResult } from "@/services/api/canvas-agent";
-import { compactCanvasSnapshot, DIRECT_AGENT_BASE_URL, DIRECT_AGENT_DEFAULT_MODEL, listDirectAgentModels, runDirectAgentTurn, type DirectAgentMessage, type DirectAgentToolCall } from "@/services/api/direct-agent";
+import { compactCanvasSnapshot, DIRECT_AGENT_BASE_URL, isDirectAgentBaseUrl, runDirectAgentTurn, type DirectAgentMessage, type DirectAgentToolCall } from "@/services/api/direct-agent";
 import { AgentChatTimeline, AgentTaskProgress, AgentUsageBar } from "./agent-chat";
 import { AgentChatComposer } from "./agent-chat-composer";
 import { AgentConnectView } from "./agent-connect-view";
@@ -136,7 +136,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     // canvasContext is intentionally excluded because project updates it every frame during dragging and resizing.
     // The panel uses it only for ref synchronization and debounced postState calls, never during rendering.
     // Subscribing here would rerender the panel every frame and amplify the #185 crash, so it is observed imperatively below.
-    const { width, url, token, connected, enabled, connectionMode, directApiKey, directModel, prompt, attachments, sending, waiting, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
+    const { width, url, token, connected, enabled, connectionMode, directApiKey, directBaseUrl, directModel, prompt, attachments, sending, waiting, tokenUsage, eventLogs, threads, activeThreadId, workspacePath, loadingThreads, activeTab, confirmTools, permissionMode, models, model, reasoningEffort, activity, conversation, connectError, pendingTool, pendingApprovals } = useAgentStore(
         useShallow((state) => ({
             width: state.width,
             url: state.url,
@@ -145,6 +145,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             enabled: state.enabled,
             connectionMode: state.connectionMode,
             directApiKey: state.directApiKey,
+            directBaseUrl: state.directBaseUrl,
             directModel: state.directModel,
             prompt: state.prompt,
             attachments: state.attachments,
@@ -171,7 +172,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     );
     const setAgentState = useAgentStore((state) => state.setAgentState);
     const directMode = connectionMode === "direct";
-    const directModelValue = directModel || DIRECT_AGENT_DEFAULT_MODEL;
+    const directBaseUrlValue = directBaseUrl.trim() || DIRECT_AGENT_BASE_URL;
     const conversationReady = directMode ? connected : conversation.status === "ready" || conversation.status === "warning";
     const conversationBusy = directMode ? false : conversation.status === "preparing" || conversation.status === "running";
     const closePanel = useAgentStore((state) => state.closePanel);
@@ -200,8 +201,6 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     const threadOperationSequenceRef = useRef(0);
     const directHistoryRef = useRef<DirectAgentMessage[]>([]);
     const directAbortRef = useRef<AbortController | null>(null);
-    const directConnectAbortRef = useRef<AbortController | null>(null);
-    const directConnectSequenceRef = useRef(0);
     const endpoint = useMemo(() => url.trim().replace(/\/$/, ""), [url]);
     const urlAgentAutoConnect = searchParams.has("agentUrl") && searchParams.has("agentToken");
     useEffect(() => {
@@ -681,6 +680,16 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         const files = current.attachments;
         const references = current.canvasReferences;
         if (!current.connected || (!text && !files.length && !references.length) || current.sending || current.waiting) return;
+        const model = current.directModel.trim();
+        const baseUrl = current.directBaseUrl.trim();
+        if (!isDirectAgentBaseUrl(baseUrl)) {
+            addMessage({ role: "error", title: t("agent.direct.invalidBaseUrl"), text: t("agent.direct.invalidBaseUrl") });
+            return;
+        }
+        if (!model) {
+            addMessage({ role: "error", title: t("agent.direct.modelRequired"), text: t("agent.direct.modelRequired") });
+            return;
+        }
         const snapshot = current.canvasContext?.snapshot || null;
         const abort = new AbortController();
         directAbortRef.current = abort;
@@ -728,9 +737,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
         addMessage({ id: messageId, turnId, role: "user", text: userText, attachments: messageAttachments, canvasReferences: references });
         directHistoryRef.current = [...directHistoryRef.current, userMessage];
         try {
-            const model = (current.directModel.trim() || DIRECT_AGENT_DEFAULT_MODEL).trim();
             const result = await runDirectAgentTurn({
                 apiKey: current.directApiKey.trim(),
+                baseUrl,
                 model,
                 history: directHistoryRef.current,
                 snapshot,
@@ -1060,9 +1069,6 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
 
     const changeConnectionMode = (mode: AgentConnectionMode) => {
         if (mode === connectionMode) return;
-        directConnectSequenceRef.current += 1;
-        directConnectAbortRef.current?.abort();
-        directConnectAbortRef.current = null;
         directAbortRef.current?.abort();
         directAbortRef.current = null;
         directHistoryRef.current = [];
@@ -1072,10 +1078,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
     };
 
     const toggleDirectConnection = async () => {
-        const attempt = ++directConnectSequenceRef.current;
         if (enabled || connected) {
-            directConnectAbortRef.current?.abort();
-            directConnectAbortRef.current = null;
             directAbortRef.current?.abort();
             directAbortRef.current = null;
             directHistoryRef.current = [];
@@ -1089,40 +1092,40 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             if (!headless) message.warning(text);
             return;
         }
-        const model = directModel.trim() || DIRECT_AGENT_DEFAULT_MODEL;
-        localStorage.setItem("canvas-agent-direct-api-key", apiKey);
-        localStorage.setItem("canvas-agent-direct-model", model);
-        const controller = new AbortController();
-        directConnectAbortRef.current = controller;
-        setAgentState({ enabled: true, connected: false, sending: true, waiting: false, activity: t("agent.connect.apiConnecting"), connectError: "" });
-        try {
-            await listDirectAgentModels(apiKey, controller.signal);
-            if (directConnectSequenceRef.current !== attempt || useAgentStore.getState().connectionMode !== "direct") return;
-            setAgentState({
-                enabled: true,
-                connected: true,
-                sending: false,
-                waiting: false,
-                directModel: model,
-                activeThreadId: "direct",
-                activeTurnId: "",
-                messages: [],
-                activity: t("agent.direct.connected"),
-                connectError: "",
-                activeTab: "chat",
-                conversation: { revision: Date.now(), conversationId: "direct", threadId: "direct", status: "ready", mcpStatuses: {} },
-            });
-            if (!headless) message.success(t("agent.direct.connected"));
-            addEventLog(t("agent.direct.connected"), model);
-        } catch (error) {
-            if (directConnectSequenceRef.current !== attempt || useAgentStore.getState().connectionMode !== "direct") return;
-            const text = error instanceof Error ? error.message : t("agent.direct.connectFailed");
-            setAgentState({ enabled: false, connected: false, sending: false, waiting: false, activity: rt("connectionFailed"), connectError: text });
-            if (!headless) message.error(text);
-            addEventLog(rt("connectionFailed"), error);
-        } finally {
-            if (directConnectAbortRef.current === controller) directConnectAbortRef.current = null;
+        const baseUrl = directBaseUrl.trim();
+        if (!isDirectAgentBaseUrl(baseUrl)) {
+            const text = t("agent.direct.invalidBaseUrl");
+            setAgentState({ connectError: text });
+            if (!headless) message.warning(text);
+            return;
         }
+        const model = directModel.trim();
+        if (!model) {
+            const text = t("agent.direct.modelRequired");
+            setAgentState({ connectError: text });
+            if (!headless) message.warning(text);
+            return;
+        }
+        localStorage.setItem("canvas-agent-direct-api-key", apiKey);
+        localStorage.setItem("canvas-agent-direct-base-url", baseUrl);
+        localStorage.setItem("canvas-agent-direct-model", model);
+        setAgentState({
+            enabled: true,
+            connected: true,
+            sending: false,
+            waiting: false,
+            directBaseUrl: baseUrl,
+            directModel: model,
+            activeThreadId: "direct",
+            activeTurnId: "",
+            messages: [],
+            activity: t("agent.direct.connected"),
+            connectError: "",
+            activeTab: "chat",
+            conversation: { revision: Date.now(), conversationId: "direct", threadId: "direct", status: "ready", mcpStatuses: {} },
+        });
+        if (!headless) message.success(t("agent.direct.connected"));
+        addEventLog(t("agent.direct.connected"), `${model} · ${baseUrl}`);
     };
 
     const toggleAgentConnection = async ({ silent = false, forceLocal = false }: { silent?: boolean; forceLocal?: boolean } = {}) => {
@@ -1644,7 +1647,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     url={url}
                     token={token}
                     directApiKey={directApiKey}
-                    directModel={directModelValue}
+                    directBaseUrl={directBaseUrl}
+                    directModel={directModel}
                     enabled={enabled}
                     connected={connected}
                     busy={sending && !connected}
@@ -1656,6 +1660,10 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                     onDirectApiKeyChange={(directApiKey) => {
                         localStorage.setItem("canvas-agent-direct-api-key", directApiKey);
                         setAgentState({ directApiKey, connectError: "" });
+                    }}
+                    onDirectBaseUrlChange={(directBaseUrl) => {
+                        localStorage.setItem("canvas-agent-direct-base-url", directBaseUrl);
+                        setAgentState({ directBaseUrl, connectError: "" });
                     }}
                     onDirectModelChange={(directModel) => {
                         localStorage.setItem("canvas-agent-direct-model", directModel);
@@ -1683,7 +1691,7 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
                 <AgentLogView
                     logs={eventLogs}
                     theme={theme}
-                    context={{ endpoint: directMode ? DIRECT_AGENT_BASE_URL : endpoint, connected, enabled, activity, waiting, sending, messages: messageCount, pendingTool: pendingTool?.name }}
+                    context={{ endpoint: directMode ? directBaseUrlValue : endpoint, connected, enabled, activity, waiting, sending, messages: messageCount, pendingTool: pendingTool?.name }}
                     onClear={clearEventLogs}
                     onCopied={(text) => message.success(text)}
                     onCopyBlocked={(text) => message.warning(text)}

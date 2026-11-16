@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import i18n from "@/i18n";
 
+import { DIRECT_AGENT_BASE_URL } from "@/services/api/direct-agent";
 import type { CanvasAgentOp, CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 import type { CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
 
@@ -52,6 +53,7 @@ type AgentStore = {
     canvasContext: AgentCanvasContext | null;
     connectionMode: AgentConnectionMode;
     directApiKey: string;
+    directBaseUrl: string;
     directModel: string;
     url: string;
     token: string;
@@ -107,6 +109,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     canvasContext: null,
     connectionMode: typeof window === "undefined" ? "local" : localStorage.getItem("canvas-agent-connection-mode") === "direct" ? "direct" : "local",
     directApiKey: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-direct-api-key") || "",
+    directBaseUrl: typeof window === "undefined" ? DIRECT_AGENT_BASE_URL : localStorage.getItem("canvas-agent-direct-base-url") || DIRECT_AGENT_BASE_URL,
     directModel: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-direct-model") || "",
     url: typeof window === "undefined" ? "http://127.0.0.1:17371" : localStorage.getItem("canvas-agent-url") || "http://127.0.0.1:17371",
     token: typeof window === "undefined" ? "" : localStorage.getItem("canvas-agent-token") || "",

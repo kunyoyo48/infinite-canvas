@@ -1,11 +1,11 @@
 import { Fragment, useRef, useState } from "react";
 import { App, Button, Input, Segmented, Tooltip } from "antd";
 import copyToClipboard from "copy-to-clipboard";
-import { Activity, Copy, KeyRound, Link2, Lock, PlugZap, RefreshCw } from "lucide-react";
+import { Activity, Copy, KeyRound, Link2, PlugZap, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
-import { DIRECT_AGENT_BASE_URL, DIRECT_AGENT_DEFAULT_MODEL, listDirectAgentModels } from "@/services/api/direct-agent";
+import { DirectAgentApiError, isDirectAgentBaseUrl, listDirectAgentModels } from "@/services/api/direct-agent";
 import type { AgentConnectionMode } from "@/stores/use-agent-store";
 
 const AGENT_PLUGIN_REMOVE_COMMAND = "codex plugin remove infinite-canvas";
@@ -17,6 +17,7 @@ export function AgentConnectView({
     url,
     token,
     directApiKey,
+    directBaseUrl,
     directModel,
     enabled,
     connected,
@@ -27,6 +28,7 @@ export function AgentConnectView({
     onUrlChange,
     onTokenChange,
     onDirectApiKeyChange,
+    onDirectBaseUrlChange,
     onDirectModelChange,
     onToggleEnabled,
 }: {
@@ -35,6 +37,7 @@ export function AgentConnectView({
     url: string;
     token: string;
     directApiKey: string;
+    directBaseUrl: string;
     directModel: string;
     enabled: boolean;
     connected: boolean;
@@ -45,6 +48,7 @@ export function AgentConnectView({
     onUrlChange: (value: string) => void;
     onTokenChange: (value: string) => void;
     onDirectApiKeyChange: (value: string) => void;
+    onDirectBaseUrlChange: (value: string) => void;
     onDirectModelChange: (value: string) => void;
     onToggleEnabled: () => void;
 }) {
@@ -67,11 +71,16 @@ export function AgentConnectView({
             message.warning(t("agent.direct.keyRequired"));
             return;
         }
+        const baseUrl = directBaseUrl.trim();
+        if (!isDirectAgentBaseUrl(baseUrl)) {
+            message.warning(t("agent.direct.invalidBaseUrl"));
+            return;
+        }
         const requestId = ++modelsRequestIdRef.current;
         setModelsRequest(kind);
         if (kind === "test") setTestResult(null);
         try {
-            const list = Array.from(new Set(await listDirectAgentModels(apiKey))).sort();
+            const list = Array.from(new Set(await listDirectAgentModels(apiKey, baseUrl))).sort();
             if (requestId !== modelsRequestIdRef.current) return;
             setModels(list);
             if (kind === "test") setTestResult({ ok: true, text: t("agent.connect.apiTestOk", { count: list.length }) });
@@ -80,18 +89,26 @@ export function AgentConnectView({
         } catch (error) {
             if (requestId !== modelsRequestIdRef.current) return;
             const text = error instanceof Error ? error.message : t("agent.direct.connectFailed");
-            if (kind === "test") setTestResult({ ok: false, text });
-            else message.error(text);
+            const hint = error instanceof DirectAgentApiError && ![401, 403].includes(error.status) ? ` — ${t("agent.connect.apiModelsHint")}` : "";
+            if (kind === "test") setTestResult({ ok: false, text: `${text}${hint}` });
+            else message.error(`${text}${hint}`);
         } finally {
             if (requestId === modelsRequestIdRef.current) setModelsRequest(null);
         }
     };
-    const changeApiKey = (value: string) => {
+    const resetModels = () => {
         modelsRequestIdRef.current += 1;
         setModelsRequest(null);
         setModels([]);
         setTestResult(null);
+    };
+    const changeApiKey = (value: string) => {
+        resetModels();
         onDirectApiKeyChange(value);
+    };
+    const changeBaseUrl = (value: string) => {
+        resetModels();
+        onDirectBaseUrlChange(value);
     };
     const codexPluginReminder = (
         <div className="rounded-lg border px-3 py-2.5 text-xs leading-5" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
@@ -237,28 +254,23 @@ export function AgentConnectView({
                                         {t(modelsRequest === "test" ? "agent.connect.apiTesting" : "agent.connect.apiTest")}
                                     </Button>
                                     <Button className="!h-8 !px-3" type={enabled ? "default" : "primary"} icon={<PlugZap className="size-4" />} onClick={onToggleEnabled}>
-                                        {t(busy ? "agent.connect.apiCancelConnecting" : enabled ? "agent.connect.disconnect" : "agent.connect.apiConnect")}
+                                        {t(enabled ? "agent.connect.disconnect" : "agent.connect.apiConnect")}
                                     </Button>
                                 </div>
                             </div>
                             <div className="mt-3 grid gap-2.5">
                                 <label className="grid gap-1.5">
                                     <span className="flex items-center gap-1.5 text-xs font-medium" style={{ color: theme.node.muted }}>
-                                        <Lock className="size-3.5" />
+                                        <Link2 className="size-3.5" />
                                         {t("agent.connect.provider")}
                                         <span className="font-normal opacity-70">Base URL</span>
                                     </span>
                                     <Input
                                         size="large"
-                                        readOnly
-                                        value={DIRECT_AGENT_BASE_URL}
-                                        prefix={<Lock className="mr-1 size-4" style={{ color: theme.node.faint }} />}
-                                        suffix={
-                                            <span className="rounded-full border px-2 py-0.5 text-[11px]" style={{ borderColor: theme.node.stroke, color: theme.node.muted }}>
-                                                {t("agent.connect.providerLocked")}
-                                            </span>
-                                        }
-                                        style={{ cursor: "not-allowed" }}
+                                        value={directBaseUrl}
+                                        onChange={(event) => changeBaseUrl(event.target.value)}
+                                        placeholder={t("agent.connect.apiBaseUrlPlaceholder")}
+                                        prefix={<Link2 className="mr-1 size-4" style={{ color: theme.node.faint }} />}
                                     />
                                 </label>
                                 <label className="grid gap-1.5">
@@ -286,7 +298,7 @@ export function AgentConnectView({
                                             aria-label={t("agent.connect.apiModel")}
                                             value={directModel}
                                             onChange={(event) => onDirectModelChange(event.target.value)}
-                                            placeholder={DIRECT_AGENT_DEFAULT_MODEL}
+                                            placeholder={t("agent.connect.apiModelPlaceholder")}
                                         />
                                         <Button className="shrink-0" size="large" icon={<RefreshCw className="size-4" />} loading={modelsRequest === "fetch"} disabled={!directApiKey.trim() || modelsRequest !== null} onClick={() => void requestModels("fetch")}>
                                             {t(modelsRequest === "fetch" ? "agent.connect.apiFetchingModels" : "agent.connect.apiFetchModels")}

@@ -57,6 +57,7 @@ test("runs a canvas tool and returns the final assistant answer", async () => {
     const executed: Array<{ name: string; input: Record<string, unknown> }> = [];
     const result = await runDirectAgentTurn({
         apiKey: "sk-test",
+        baseUrl: "https://api.example.com/v1",
         model: "gpt-5.5",
         history: [{ role: "user", content: "创建一个文本节点" }],
         snapshot: null,
@@ -78,7 +79,27 @@ test("runs a canvas tool and returns the final assistant answer", async () => {
 test("maps 401 from the models endpoint to an authentication error", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({ error: { message: "Invalid token" } }), { status: 401, headers: { "content-type": "application/json" } })) as typeof fetch;
 
-    await expect(listDirectAgentModels("sk-test")).rejects.toThrow("鉴权失败");
+    await expect(listDirectAgentModels("sk-test", "https://api.example.com/v1")).rejects.toThrow("鉴权失败");
+});
+
+test("uses the configured base URL for model and chat requests", async () => {
+    const urls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+        urls.push(String(input));
+        return urls.length === 1 ? jsonResponse({ data: [{ id: "claude-sonnet-4-5" }] }) : jsonResponse({ choices: [{ message: { content: "ok" } }] });
+    }) as typeof fetch;
+
+    await expect(listDirectAgentModels("sk-test", "https://api.example.com")).resolves.toEqual(["claude-sonnet-4-5"]);
+    await runDirectAgentTurn({
+        apiKey: "sk-test",
+        baseUrl: "https://api.example.com/v1beta/openai",
+        model: "claude-sonnet-4-5",
+        history: [{ role: "user", content: "你好" }],
+        snapshot: null,
+        signal: new AbortController().signal,
+        executeTool: async () => ({ ok: true }),
+    });
+    expect(urls).toEqual(["https://api.example.com/v1/models", "https://api.example.com/v1beta/openai/chat/completions"]);
 });
 
 test("stops after the tool round limit", async () => {
@@ -91,6 +112,7 @@ test("stops after the tool round limit", async () => {
     await expect(
         runDirectAgentTurn({
             apiKey: "sk-test",
+            baseUrl: "https://api.example.com/v1",
             model: "gpt-5.5",
             history: [{ role: "user", content: "读画布" }],
             snapshot: null,
@@ -113,6 +135,7 @@ test("does not call the API after the signal is aborted", async () => {
     await expect(
         runDirectAgentTurn({
             apiKey: "sk-test",
+            baseUrl: "https://api.example.com/v1",
             model: "gpt-5.5",
             history: [{ role: "user", content: "读画布" }],
             snapshot: null,

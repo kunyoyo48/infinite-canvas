@@ -1,9 +1,8 @@
 import i18n from "@/i18n";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
 
-/** Third-party relay used by the direct Agent mode. The address is intentionally fixed. */
+/** Default OpenAI-compatible endpoint for the direct Agent mode; the user can point it elsewhere. */
 export const DIRECT_AGENT_BASE_URL = "https://www.xnnapi.top/v1";
-export const DIRECT_AGENT_DEFAULT_MODEL = "gpt-5.5";
 
 const DIRECT_AGENT_MAX_TOOL_ROUNDS = 8;
 const DIRECT_AGENT_MAX_HISTORY_MESSAGES = 24;
@@ -214,8 +213,39 @@ export function buildDirectAgentSystemPrompt(snapshot: CanvasAgentSnapshot | nul
     return lines.join("\n");
 }
 
+/** Keep a bare origin on `/v1` while preserving explicit OpenAI-compatible paths such as `/v1beta/openai`. */
+function directAgentBaseUrl(value: string) {
+    const trimmed = value.trim().replace(/\/+$/, "");
+    if (!trimmed) return "";
+    const url = new URL(trimmed);
+    if (url.pathname === "/") url.pathname = "/v1";
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+}
+
+function directAgentUrl(baseUrl: string, path: string) {
+    const url = new URL(directAgentBaseUrl(baseUrl));
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}${path}${url.search}`;
+}
+
+export function isDirectAgentBaseUrl(value: string) {
+    try {
+        const url = new URL(value.trim());
+        return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+    } catch {
+        return false;
+    }
+}
+
+export class DirectAgentApiError extends Error {
+    constructor(message: string, readonly status: number) {
+        super(message);
+        this.name = "DirectAgentApiError";
+    }
+}
+
 async function readDirectAgentError(response: Response) {
-    if (response.status === 401) return i18n.t("apiErrors.authenticationFailed");
+    if (response.status === 401 || response.status === 403) return i18n.t("apiErrors.authenticationFailed");
     let detail = "";
     try {
         const body = (await response.json()) as { error?: string | { message?: string }; message?: string };
@@ -226,22 +256,22 @@ async function readDirectAgentError(response: Response) {
     return detail || i18n.t("apiErrors.httpFailed", { status: response.status });
 }
 
-export async function listDirectAgentModels(apiKey: string, signal?: AbortSignal) {
-    const response = await fetch(`${DIRECT_AGENT_BASE_URL}/models`, { headers: { authorization: `Bearer ${apiKey}` }, signal });
-    if (!response.ok) throw new Error(await readDirectAgentError(response));
+export async function listDirectAgentModels(apiKey: string, baseUrl: string, signal?: AbortSignal) {
+    const response = await fetch(directAgentUrl(baseUrl, "/models"), { headers: { authorization: `Bearer ${apiKey}` }, signal });
+    if (!response.ok) throw new DirectAgentApiError(await readDirectAgentError(response), response.status);
     const body = (await response.json()) as { data?: Array<{ id?: unknown }> };
     return (body.data || []).map((item) => String(item.id || "")).filter(Boolean);
 }
 
-async function requestDirectAgent(apiKey: string, body: Record<string, unknown>, signal?: AbortSignal) {
+async function requestDirectAgent(apiKey: string, baseUrl: string, body: Record<string, unknown>, signal?: AbortSignal) {
     try {
-        const response = await fetch(`${DIRECT_AGENT_BASE_URL}/chat/completions`, {
+        const response = await fetch(directAgentUrl(baseUrl, "/chat/completions"), {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
             body: JSON.stringify(body),
             signal,
         });
-        if (!response.ok) throw new Error(await readDirectAgentError(response));
+        if (!response.ok) throw new DirectAgentApiError(await readDirectAgentError(response), response.status);
         return (await response.json()) as ChatCompletionPayload;
     } catch (error) {
         if (signal?.aborted) throw error;
@@ -270,6 +300,7 @@ function wireMessages(messages: DirectAgentMessage[]) {
 
 export async function runDirectAgentTurn(options: {
     apiKey: string;
+    baseUrl: string;
     model: string;
     history: DirectAgentMessage[];
     snapshot: CanvasAgentSnapshot | null;
@@ -284,6 +315,7 @@ export async function runDirectAgentTurn(options: {
         if (options.signal.aborted) throw new DOMException("Aborted", "AbortError");
         const payload = await requestDirectAgent(
             options.apiKey,
+            options.baseUrl,
             {
                 model: options.model,
                 messages: wireMessages([{ role: "system", content: buildDirectAgentSystemPrompt(options.snapshot) }, ...history]),
