@@ -5,8 +5,10 @@ import { fetchPrompts } from "@/services/api/prompts";
 import { uploadImage } from "@/services/image-storage";
 import { imageAspectOptions, imageQualityOptions, imageScaleOptions } from "@/components/image-settings-panel";
 import { videoResolutionOptions, videoSecondsRange, videoSizeOptions } from "@/components/video-settings-panel";
+import { agentImageOptions, agentVideoOptions } from "@/lib/agent/agent-generation-options";
 import type { CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
-import { clampVideoSeconds } from "@/lib/media-size";
+import { clampVideoSeconds, computeMediaSize, computeVideoSize } from "@/lib/media-size";
+import { useAgentGenerationStore } from "@/stores/use-agent-generation-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
 import { useAssetStore } from "@/stores/use-asset-store";
 import { modelOptionLabel, modelOptionName, normalizeModelOptionValue, selectableModelsByCapability, useConfigStore } from "@/stores/use-config-store";
@@ -161,6 +163,39 @@ function getImageConfig() {
 
 function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     const configStore = useConfigStore.getState();
+    const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
+    if (input.run === false) {
+        const applied = applyImageWorkbenchInput(input, configStore);
+        navigate("/image");
+        const taskId = useWorkbenchAgentStore.getState().dispatchImage({ prompt, run: false });
+        return { ok: true, navigated: "/image", prompt, run: false, taskId, applied, note: siteText("imageConfigApplied") };
+    }
+    const options = agentImageOptions({
+        config: configStore.config,
+        model: typeof input.model === "string" ? normalizeModelOptionValue(input.model, configStore.config.channels) || input.model : undefined,
+        size: typeof input.size === "string" ? input.size : undefined,
+        quality: typeof input.quality === "string" ? input.quality : undefined,
+        count: input.count != null ? String(input.count) : configStore.config.count,
+    });
+    useAgentGenerationStore.getState().enqueue({
+        kind: "image",
+        prompt: prompt || "",
+        options,
+        onConfirm: (next) => {
+            const store = useConfigStore.getState();
+            store.updateConfig("imageModel", next.model);
+            store.updateConfig("size", computeMediaSize(next.resolution, next.ratio));
+            store.updateConfig("quality", next.quality);
+            store.updateConfig("count", next.count);
+            navigate("/image");
+            useWorkbenchAgentStore.getState().dispatchImage({ prompt, run: true });
+        },
+    });
+    return { ok: true, awaitingUser: true, prompt, note: siteText("imageOptionsRequested") };
+}
+
+/** Apply explicitly passed workbench parameters without starting generation. */
+function applyImageWorkbenchInput(input: SiteToolInput, configStore: ReturnType<typeof useConfigStore.getState>) {
     const applied: Record<string, unknown> = {};
     if (typeof input.model === "string" && input.model.trim()) {
         const value = normalizeModelOptionValue(input.model, configStore.config.channels) || input.model;
@@ -180,11 +215,7 @@ function runImageWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         configStore.updateConfig("count", count);
         applied.count = count;
     }
-    const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
-    const run = input.run !== false;
-    navigate("/image");
-    const taskId = useWorkbenchAgentStore.getState().dispatchImage({ prompt, run });
-    return { ok: true, navigated: "/image", prompt, run, taskId, applied, note: siteText(run ? "imageGenerationStarted" : "imageConfigApplied") };
+    return applied;
 }
 
 function getVideoConfig() {
@@ -214,6 +245,43 @@ function getVideoConfig() {
 
 function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
     const configStore = useConfigStore.getState();
+    const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
+    if (input.run === false) {
+        const applied = applyVideoWorkbenchInput(input, configStore);
+        navigate("/video");
+        const taskId = useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run: false });
+        return { ok: true, navigated: "/video", prompt, run: false, taskId, applied, note: siteText("videoConfigApplied") };
+    }
+    const options = agentVideoOptions({
+        config: configStore.config,
+        model: typeof input.model === "string" ? normalizeModelOptionValue(input.model, configStore.config.channels) || input.model : undefined,
+        size: typeof input.size === "string" ? input.size : undefined,
+        resolution: typeof input.resolution === "string" ? input.resolution : undefined,
+        seconds: input.seconds != null ? String(input.seconds) : undefined,
+        mode: input.mode === "reference" || input.mode === "frames" ? input.mode : undefined,
+    });
+    useAgentGenerationStore.getState().enqueue({
+        kind: "video",
+        prompt: prompt || "",
+        options,
+        onConfirm: (next) => {
+            const store = useConfigStore.getState();
+            store.updateConfig("videoModel", next.model);
+            store.updateConfig("size", computeVideoSize(next.resolution, next.ratio));
+            store.updateConfig("vquality", next.resolution);
+            store.updateConfig("videoSeconds", next.seconds);
+            store.updateConfig("videoMode", next.mode);
+            if (typeof input.generateAudio === "boolean") store.updateConfig("videoGenerateAudio", String(input.generateAudio));
+            if (typeof input.watermark === "boolean") store.updateConfig("videoWatermark", String(input.watermark));
+            navigate("/video");
+            useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run: true });
+        },
+    });
+    return { ok: true, awaitingUser: true, prompt, note: siteText("videoOptionsRequested") };
+}
+
+/** Apply explicitly passed video workbench parameters without starting generation. */
+function applyVideoWorkbenchInput(input: SiteToolInput, configStore: ReturnType<typeof useConfigStore.getState>) {
     const applied: Record<string, unknown> = {};
     if (typeof input.model === "string" && input.model.trim()) {
         const value = normalizeModelOptionValue(input.model, configStore.config.channels) || input.model;
@@ -245,11 +313,7 @@ function runVideoWorkbench(input: SiteToolInput, navigate: NavigateFunction) {
         configStore.updateConfig("videoMode", input.mode);
         applied.mode = input.mode;
     }
-    const prompt = typeof input.prompt === "string" ? input.prompt : undefined;
-    const run = input.run !== false;
-    navigate("/video");
-    const taskId = useWorkbenchAgentStore.getState().dispatchVideo({ prompt, run });
-    return { ok: true, navigated: "/video", prompt, run, taskId, applied, note: siteText(run ? "videoGenerationStarted" : "videoConfigApplied") };
+    return applied;
 }
 
 async function searchPrompts(input: SiteToolInput) {

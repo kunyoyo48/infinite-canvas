@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useState, type Dispatch, type MutableR
 
 import i18n from "@/i18n";
 import { useAgentStore } from "@/stores/use-agent-store";
+import { agentGenerationMode, agentImageMetadata, agentImageOptions, agentVideoMetadata, agentVideoOptions } from "@/lib/agent/agent-generation-options";
 import { applyCanvasAgentOps, type CanvasAgentOp, type CanvasAgentSnapshot } from "@/lib/canvas/canvas-agent-ops";
+import { useAgentGenerationStore } from "@/stores/use-agent-generation-store";
+import { useConfigStore } from "@/stores/use-config-store";
 import type { CanvasNodeGenerationMode } from "@/components/canvas/canvas-node-prompt-panel";
 import type { CanvasConnection, CanvasNodeData, ContextMenuState, ViewportTransform } from "@/types/canvas";
 
@@ -65,7 +68,38 @@ export function useAgentBridge(params: AgentBridgeParams) {
                     generationOps.forEach((op) => {
                         const target = nodesRef.current.find((node) => node.id === op.nodeId);
                         const prompt = op.prompt?.trim() ? op.prompt : (target?.metadata?.composerContent ?? target?.metadata?.prompt ?? "");
-                        void generateNodeRef.current?.(op.nodeId, op.mode || target?.metadata?.generationMode || "image", prompt);
+                        const mode = agentGenerationMode(op, nodesRef.current);
+                        if (!target || (mode !== "image" && mode !== "video")) {
+                            void generateNodeRef.current?.(op.nodeId, mode, prompt);
+                            return;
+                        }
+                        // Agent generations stop at a confirmation dialog so the user can pick the channel/model and ratio first.
+                        const config = useConfigStore.getState().config;
+                        const options =
+                            mode === "image"
+                                ? agentImageOptions({
+                                      config,
+                                      model: target.metadata?.model,
+                                      size: target.metadata?.size,
+                                      quality: target.metadata?.quality,
+                                      count: String(target.metadata?.count || config.canvasImageCount || config.count),
+                                  })
+                                : agentVideoOptions({ config, model: target.metadata?.model, size: target.metadata?.size, resolution: target.metadata?.vquality, seconds: target.metadata?.seconds, mode: target.metadata?.videoMode });
+                        useAgentGenerationStore.getState().enqueue({
+                            kind: mode,
+                            prompt,
+                            options,
+                            onConfirm: (next) => {
+                                // Drop the request if the canvas unmounted or switched projects while the dialog was open.
+                                if (useAgentStore.getState().canvasContext?.snapshot.projectId !== projectId) return;
+                                if (!nodesRef.current.some((node) => node.id === op.nodeId)) return;
+                                const metadata = mode === "image" ? agentImageMetadata(next) : agentVideoMetadata(next);
+                                const updated = nodesRef.current.map((node) => (node.id === op.nodeId ? { ...node, metadata: { ...node.metadata, ...metadata } } : node));
+                                nodesRef.current = updated;
+                                setNodes(updated);
+                                void generateNodeRef.current?.(op.nodeId, mode, prompt);
+                            },
+                        });
                     }),
                 );
             }
