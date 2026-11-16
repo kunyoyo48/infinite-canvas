@@ -21,6 +21,7 @@ import { useShallow } from "zustand/react/shallow";
 import { useAgentStore, type AgentAttachment, type AgentBootstrapStatus, type AgentCanvasContext, type AgentCanvasReference, type AgentChatItem, type AgentConnectionMode, type AgentConversationState, type AgentModel, type AgentPanelTab, type AgentPendingApproval, type AgentPendingToolCall, type AgentPermissionMode, type AgentReasoningEffort, type AgentThreadSummary } from "@/stores/use-agent-store";
 import { type CanvasAgentOp, type CanvasAgentSnapshot, summarizeCanvasAgentOps } from "@/lib/canvas/canvas-agent-ops";
 import { isSiteTool, runSiteTool } from "@/lib/agent/agent-site-tools";
+import { hasAgentGenerationOptions } from "@/lib/agent/agent-generation-options";
 import { acknowledgeCodexHistory, activateAgentClient, AgentApiError, discoverAgentConfig, fetchAgentJson, interruptCodexTurn, postCodexApproval, postState, postToolResult } from "@/services/api/canvas-agent";
 import { compactCanvasSnapshot, DIRECT_AGENT_BASE_URL, isDirectAgentBaseUrl, runDirectAgentTurn, type DirectAgentMessage, type DirectAgentToolCall } from "@/services/api/direct-agent";
 import { AgentChatTimeline, AgentTaskProgress, AgentUsageBar } from "./agent-chat";
@@ -658,7 +659,8 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             const existingIds = new Set(context.snapshot.nodes.map((node) => node.id));
             const safeOps = ops.map((op) => (op.type === "add_node" && op.id && existingIds.has(op.id) ? { ...op, id: undefined } : op));
             const result = context.applyOps(safeOps);
-            return { ok: true, projectId: result.projectId, nodeCount: result.nodes.length, selectedNodeIds: result.selectedNodeIds };
+            const generationPending = hasAgentGenerationOptions(safeOps, result.nodes);
+            return { ok: true, projectId: result.projectId, nodeCount: result.nodes.length, selectedNodeIds: result.selectedNodeIds, generationPending };
         }
         if (call.name === "site_navigate") {
             const path = String(input.path || "/");
@@ -992,8 +994,9 @@ export function LocalAgentPanel({ embedded, headless, autoConnect }: { embedded?
             } else if (payload.name === "canvas_apply_ops") {
                 const context = canvasContextRef.current;
                 if (!context) throw new Error(rt("openCanvasFirst"));
-                result = context.applyOps(appliedOps);
-                void postState(endpoint, token, clientIdRef.current, result as CanvasAgentSnapshot);
+                const applied = context.applyOps(appliedOps);
+                void postState(endpoint, token, clientIdRef.current, applied as CanvasAgentSnapshot);
+                result = { ...applied, generationPending: hasAgentGenerationOptions(appliedOps, applied.nodes) };
             } else if (payload.name === "canvas_create_attachment_nodes") {
                 const context = canvasContextRef.current;
                 if (!context) throw new Error(rt("openCanvasFirst"));
