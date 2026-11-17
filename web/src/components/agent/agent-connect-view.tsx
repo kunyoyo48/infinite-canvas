@@ -55,8 +55,9 @@ export function AgentConnectView({
     const { t } = useTranslation();
     const { message } = App.useApp();
     const [models, setModels] = useState<string[]>([]);
+    const [modelsEmpty, setModelsEmpty] = useState(false);
     const [modelsRequest, setModelsRequest] = useState<"fetch" | "test" | null>(null);
-    const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+    const [testResult, setTestResult] = useState<{ tone: "ok" | "warn" | "error"; text: string } | null>(null);
     const modelsRequestIdRef = useRef(0);
     const steps = [{ title: t("agent.connect.pluginTitle"), text: t("agent.connect.pluginText") }, { title: t("agent.connect.directTitle"), text: t("agent.connect.directText"), command: "npx -y @basketikun/canvas-agent@latest" }];
     const statusText = connectError ? t("agent.status.failed") : connected ? activity : enabled ? t("agent.status.connecting") : t("agent.status.disconnected");
@@ -78,19 +79,20 @@ export function AgentConnectView({
         }
         const requestId = ++modelsRequestIdRef.current;
         setModelsRequest(kind);
-        if (kind === "test") setTestResult(null);
+        setTestResult(null);
         try {
             const list = Array.from(new Set(await listDirectAgentModels(apiKey, baseUrl))).sort();
             if (requestId !== modelsRequestIdRef.current) return;
             setModels(list);
-            if (kind === "test") setTestResult({ ok: true, text: t("agent.connect.apiTestOk", { count: list.length }) });
+            setModelsEmpty(!list.length);
+            if (kind === "test") setTestResult(list.length ? { tone: "ok", text: t("agent.connect.apiTestOk", { count: list.length }) } : { tone: "warn", text: t("agent.connect.apiTestEmpty") });
             else if (list.length) message.success(t("agent.connect.apiModelsFetched", { count: list.length }));
-            else message.warning(t("agent.connect.apiModelsEmpty"));
         } catch (error) {
             if (requestId !== modelsRequestIdRef.current) return;
+            setModelsEmpty(false);
             const text = error instanceof Error ? error.message : t("agent.direct.connectFailed");
-            const hint = error instanceof DirectAgentApiError && ![401, 403].includes(error.status) ? ` — ${t("agent.connect.apiModelsHint")}` : "";
-            if (kind === "test") setTestResult({ ok: false, text: `${text}${hint}` });
+            const hint = error instanceof DirectAgentApiError && error.status >= 400 && ![401, 403].includes(error.status) ? ` — ${t("agent.connect.apiModelsHint")}` : "";
+            if (kind === "test") setTestResult({ tone: "error", text: `${text}${hint}` });
             else message.error(`${text}${hint}`);
         } finally {
             if (requestId === modelsRequestIdRef.current) setModelsRequest(null);
@@ -100,6 +102,7 @@ export function AgentConnectView({
         modelsRequestIdRef.current += 1;
         setModelsRequest(null);
         setModels([]);
+        setModelsEmpty(false);
         setTestResult(null);
     };
     const changeApiKey = (value: string) => {
@@ -320,9 +323,20 @@ export function AgentConnectView({
                                             ))}
                                         </div>
                                     ) : null}
+                                    {modelsEmpty ? (
+                                        <div className="text-[11px] leading-4" style={{ color: theme.node.muted }}>
+                                            {t("agent.connect.apiModelsEmptyHint")}
+                                        </div>
+                                    ) : null}
                                 </div>
                                 {testResult ? (
-                                    <div className="rounded-md border px-2.5 py-2 text-xs leading-5" style={{ borderColor: testResult.ok ? "rgba(22,163,74,.35)" : "rgba(220,38,38,.35)", color: testResult.ok ? "#16a34a" : "#dc2626" }}>
+                                    <div
+                                        className="rounded-md border px-2.5 py-2 text-xs leading-5"
+                                        style={{
+                                            borderColor: testResult.tone === "ok" ? "rgba(22,163,74,.35)" : testResult.tone === "warn" ? "rgba(217,119,6,.35)" : "rgba(220,38,38,.35)",
+                                            color: testResult.tone === "ok" ? "#16a34a" : testResult.tone === "warn" ? "#d97706" : "#dc2626",
+                                        }}
+                                    >
                                         {testResult.text}
                                     </div>
                                 ) : null}

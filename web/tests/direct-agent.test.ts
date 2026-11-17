@@ -82,6 +82,18 @@ test("maps 401 from the models endpoint to an authentication error", async () =>
     await expect(listDirectAgentModels("sk-test", "https://api.example.com/v1")).rejects.toThrow("鉴权失败");
 });
 
+test("returns an empty list when the provider exposes no models", async () => {
+    globalThis.fetch = (async () => jsonResponse({ success: true, data: [], object: "list" })) as typeof fetch;
+
+    await expect(listDirectAgentModels("sk-test", "https://api.example.com/v1")).resolves.toEqual([]);
+});
+
+test("surfaces the provider message when a 200 response reports a failure", async () => {
+    globalThis.fetch = (async () => jsonResponse({ success: false, message: "get user group failed" })) as typeof fetch;
+
+    await expect(listDirectAgentModels("sk-test", "https://api.example.com/v1")).rejects.toThrow("get user group failed");
+});
+
 test("uses the configured base URL for model and chat requests", async () => {
     const urls: string[] = [];
     globalThis.fetch = (async (input: RequestInfo | URL) => {
