@@ -10,6 +10,10 @@ import HomePage from "@/pages/home";
 import ImagePage from "@/pages/image";
 import NotFound from "@/pages/not-found";
 import PromptsPage from "@/pages/prompts";
+import WorkflowEditPage from "@/pages/workflow/edit";
+import WorkflowMarketPage from "@/pages/workflow/market";
+import WorkflowMyPage from "@/pages/workflow/my";
+import WorkflowRunPage from "@/pages/workflow/run";
 import VideoPage from "@/pages/video";
 
 export const router = createBrowserRouter([
@@ -25,6 +29,10 @@ export const router = createBrowserRouter([
             { path: "/image", element: <ImagePage /> },
             { path: "/video", element: <VideoPage /> },
             { path: "/assets", element: <AssetsPage /> },
+            { path: "/workflow", element: <WorkflowMarketPage /> },
+            { path: "/workflow/run/:workflowId", element: <WorkflowRunPage /> },
+            { path: "/workflow/edit/:workflowId?", element: <WorkflowEditPage /> },
+            { path: "/workflow/my", element: <WorkflowMyPage /> },
             { path: "/prompts", element: <PromptsPage /> },
             { path: "/canvas", element: <CanvasPage /> },
             { path: "/canvas/:id", element: <CanvasProjectPage /> },
