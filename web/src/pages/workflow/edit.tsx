@@ -10,6 +10,7 @@ import { useUserStore } from "@/stores/use-user-store";
 import { useConfigStore } from "@/stores/use-config-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { canvasThemes, type CanvasTheme } from "@/lib/canvas-theme";
+import { fetchAllPlatformModels, fetchPlatformModels, pickImageModels } from "@/services/api/platform-models";
 import { extractTemplateVars, renderTemplate } from "@/lib/workflow/template";
 import { WORKFLOW_CATEGORIES, type WorkflowField, type WorkflowFieldType, type WorkflowRecord } from "@/types/workflow";
 
@@ -45,8 +46,33 @@ export default function WorkflowEditPage() {
         if (existing) setDraft(existing);
     }, [existing]);
 
-    /** 可选模型：来自渠道已配置的生图模型 */
-    const imageModels = useMemo(() => Array.from(new Set(config.channels.flatMap((channel) => channel.models.filter((model) => model.capability === "image").map((model) => model.name)))), [config.channels]);
+    /** 渠道里已配置的生图模型：接口拉取失败时的兜底，也是首屏的即时值 */
+    const localImageModels = useMemo(() => Array.from(new Set(config.channels.flatMap((channel) => channel.models.filter((model) => model.capability === "image").map((model) => model.name)))), [config.channels]);
+
+    /** 平台模型池：GET {baseUrl}/models（对 xnnapi 即 /v1/models），60 秒缓存 */
+    const [platformModels, setPlatformModels] = useState<string[]>([]);
+    const [modelLoading, setModelLoading] = useState(false);
+    useEffect(() => {
+        let alive = true;
+        setModelLoading(true);
+        // 先按能力筛选再并上接口结果，保证渠道里手动加的也能用
+        void Promise.all(config.channels.filter((channel) => channel.apiFormat === "openai").map((channel) => fetchPlatformModels(channel).then((all) => pickImageModels(channel, all))))
+            .then((lists) => {
+                if (alive) setPlatformModels(Array.from(new Set(lists.flat())).sort());
+            })
+            .finally(() => {
+                if (alive) setModelLoading(false);
+            });
+        return () => {
+            alive = false;
+        };
+    }, [config.channels]);
+
+    /** 编辑器下拉的最终数据源：平台真实模型 + 本地已配置模型 */
+    const imageModels = useMemo(() => {
+        const merged = Array.from(new Set([...platformModels, ...localImageModels]));
+        return merged.length ? merged.sort() : localImageModels;
+    }, [localImageModels, platformModels]);
 
     const patch = (next: Partial<WorkflowRecord>) => {
         setDraft((prev) => (prev ? { ...prev, ...next } : prev));
@@ -142,9 +168,28 @@ export default function WorkflowEditPage() {
 
                 {/* ② 模型配置 */}
                 <Section title={t("workflow.editorModel")} theme={theme}>
+                    <div className="flex items-center gap-2 text-[11px]" style={{ color: theme.node.faint }}>
+                        <span>{t("workflow.modelPoolHint", { count: imageModels.length })}</span>
+                        <Button
+                            size="small"
+                            type="text"
+                            loading={modelLoading}
+                            className="px-1"
+                            onClick={() => {
+                                setPlatformModels([]);
+                                void Promise.all(config.channels.filter((channel) => channel.apiFormat === "openai").map((channel) => fetchPlatformModels(channel).then((all) => pickImageModels(channel, all)))).then((lists) =>
+                                    setPlatformModels(Array.from(new Set(lists.flat())).sort()),
+                                );
+                            }}
+                        >
+                            {t("workflow.refreshModels")}
+                        </Button>
+                    </div>
                     <Field label={t("workflow.fieldRecommendModel")} hint={t("workflow.fieldRecommendHint")} required>
                         <Select
                             className="w-full"
+                            showSearch
+                            loading={modelLoading}
                             value={draft.recommend_model_id || undefined}
                             options={imageModels.map((model) => ({ label: model, value: model }))}
                             onChange={(next) => {
@@ -154,13 +199,7 @@ export default function WorkflowEditPage() {
                         />
                     </Field>
                     <Field label={t("workflow.fieldAllowedModels")} hint={t("workflow.fieldAllowedHint")}>
-                        <Select
-                            mode="multiple"
-                            className="w-full"
-                            value={draft.allowed_model_ids}
-                            options={imageModels.map((model) => ({ label: model, value: model }))}
-                            onChange={(next) => patch({ allowed_model_ids: next.map(String) })}
-                        />
+                        <Select mode="multiple" className="w-full" showSearch loading={modelLoading} value={draft.allowed_model_ids} options={imageModels.map((model) => ({ label: model, value: model }))} onChange={(next) => patch({ allowed_model_ids: next.map(String) })} />
                     </Field>
                 </Section>
 

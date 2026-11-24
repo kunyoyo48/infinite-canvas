@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { WorkflowImagePreview } from "@/components/workflow/workflow-image-field";
 import { WorkflowSchemaForm, initialWorkflowValues, validateWorkflowValues } from "@/components/workflow/workflow-schema-form";
 import { isModelAvailable, runWorkflow, type RunStage } from "@/services/api/workflow";
+import { fetchPlatformModels } from "@/services/api/platform-models";
 import { toPublicWorkflow, useWorkflowStore, visibleWorkflows } from "@/stores/use-workflow-store";
 import { useCanvasInsertStore } from "@/stores/use-canvas-insert-store";
 import { useConfigStore } from "@/stores/use-config-store";
@@ -40,6 +41,21 @@ export default function WorkflowRunPage() {
         return record ? toPublicWorkflow(record) : null;
     }, [uid, workflowId, workflows]);
 
+    /** 平台真实模型池：渠道里没手动登记但平台上有的模型也应可选 */
+    const [platformModels, setPlatformModels] = useState<string[]>([]);
+    useEffect(() => {
+        let alive = true;
+        void Promise.all(config.channels.filter((channel) => channel.apiFormat === "openai").map((channel) => fetchPlatformModels(channel))).then((lists) => {
+            if (alive) setPlatformModels(Array.from(new Set(lists.flat())));
+        });
+        return () => {
+            alive = false;
+        };
+    }, [config.channels]);
+
+    /** 渠道本地配置过 或 平台模型池里存在，都算可用 */
+    const available = (id: string) => isModelAvailable(config, id) || platformModels.includes(id);
+
     const [modelId, setModelId] = useState("");
     const [values, setValues] = useState<Record<string, string>>({});
     const [running, setRunning] = useState(false);
@@ -56,7 +72,7 @@ export default function WorkflowRunPage() {
         setImages([]);
         setError("");
         setProgress(0);
-        const allowed = workflow.allowed_model_ids.filter((id) => isModelAvailable(config, id));
+        const allowed = workflow.allowed_model_ids.filter((id) => isModelAvailable(config, id) || platformModels.includes(id));
         setModelId(allowed.includes(workflow.recommend_model_id) ? workflow.recommend_model_id : allowed[0] || workflow.recommend_model_id);
         // 只在 workflow 变化时重置，config 变化不重置用户已填内容
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -92,7 +108,7 @@ export default function WorkflowRunPage() {
         );
     }
 
-    const modelOptions = workflow.allowed_model_ids.map((id) => ({ label: id, value: id, disabled: !isModelAvailable(config, id) }));
+    const modelOptions = workflow.allowed_model_ids.map((id) => ({ label: id, value: id, disabled: !available(id) }));
     const showDiffHint = modelId && modelId !== workflow.recommend_model_id;
     const isFavorite = favorites.includes(workflow.workflow_id);
 

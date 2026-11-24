@@ -8,12 +8,15 @@ import type { WorkflowField } from "@/types/workflow";
 
 /**
  * 工作流运行。
- * 把「表单值 + 工作流模板」渲染成一次标准生图请求，再复用画布已有的
- * requestGeneration / requestEdit（即调用自家平台 /v1/images/generations、
- * /v1/images/edits），token 计费完全沿用渠道配置，工作流本身不额外扣费。
  *
- * 接入后端后：这里换成 POST /api/workflow/run + WebSocket 进度，
- * 入参与返回结构保持不变，页面层不用改。
+ * 对接事实（2026-11 实测 xnnapi.top）：
+ * - 真实生图接口是 OpenAI 兼容面：POST {baseUrl}/images/generations 与 /images/edits
+ * - 需求书里的 /api/generate 实际返回 404，不使用
+ * - /v1/* 认 sk- 开头的 API key；/api/* 认网页登录态 access token，两者不通用
+ * - 因此本模块直接复用画布的 requestGeneration / requestEdit，
+ *   渠道 baseUrl 默认 https://www.xnnapi.top/v1，扣费落在该 key 所属账号，工作流零额外计费。
+ *
+ * 流程：表单值 + 模板 → 渲染 prompt → 组装 AiConfig → 调生图 → 结果存本地
  */
 
 export type RunStage = "prepare" | "render" | "submit" | "upload";
@@ -75,7 +78,7 @@ export async function runWorkflow(params: {
     const references = await collectReferences(fields, values);
     const prompt = composePrompt(renderedPrompt, renderedNegative);
 
-    // 单图走 generation，带参考图走 edits，与画布生图行为一致
+    // 单图走 generations，带参考图走 edits，与画布生图行为一致
     const requestConfig: AiConfig = { ...config, model: resolveModelValue(config, modelId), count: "1", systemPrompt: "" };
 
     onProgress?.(30, "submit");
