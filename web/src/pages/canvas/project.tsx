@@ -44,7 +44,6 @@ import { CanvasSidePanel } from "@/components/canvas/canvas-side-panel";
 import { CanvasZoomControls } from "@/components/canvas/canvas-zoom-controls";
 import { useAgentStore } from "@/stores/use-agent-store";
 import { useCanvasStore } from "@/stores/canvas/use-canvas-store";
-import { buildImageNodes, useCanvasInsertStore } from "@/stores/use-canvas-insert-store";
 import { useAgentBridge } from "@/pages/canvas/hooks/use-agent-bridge";
 import { usePluginHost } from "@/pages/canvas/hooks/use-plugin-host";
 import { buildNodeMentionReferences, getGroupResourceNodes, isCanvasReferenceNode, type CanvasResourceReference } from "@/lib/canvas/canvas-resource-references";
@@ -888,22 +887,6 @@ function InfiniteCanvasPage() {
         },
         [effectiveConfig.canvasImageCount, effectiveConfig.count, effectiveConfig.imageModel, effectiveConfig.model, effectiveConfig.size, getCanvasCenter],
     );
-
-    // 工作流广场出图后跳转到画布，这里消费一次待插入图片
-    const pendingCanvasImages = useCanvasInsertStore((state) => state.pending);
-    const takePendingCanvasImages = useCanvasInsertStore((state) => state.take);
-    useEffect(() => {
-        if (!projectLoaded || !pendingCanvasImages.length) return;
-        const items = takePendingCanvasImages();
-        if (!items.length) return;
-        void buildImageNodes(items, getCanvasCenter()).then((created) => {
-            if (!created.length) return;
-            setNodes((prev) => [...prev, ...created]);
-            setSelectedNodeIds(new Set(created.map((node) => node.id)));
-            setSelectedConnectionId(null);
-            message.success(t("workflow.addedToCanvas", { title: created[0].title }));
-        });
-    }, [getCanvasCenter, message, pendingCanvasImages, projectLoaded, setNodes, t, takePendingCanvasImages]);
 
     const deleteNodes = useCallback(
         (ids: Set<string>) => {
